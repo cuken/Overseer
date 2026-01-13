@@ -114,6 +114,7 @@ func setDefaults(v *viper.Viper, cfg *types.Config) {
 	v.SetDefault("paths.tasks", cfg.Paths.Tasks)
 	v.SetDefault("paths.workspaces", cfg.Paths.Workspaces)
 	v.SetDefault("paths.logs", cfg.Paths.Logs)
+	v.SetDefault("paths.source", cfg.Paths.Source)
 }
 
 // EnsureDirectories creates all required directories for overseer operation
@@ -126,6 +127,7 @@ func EnsureDirectories(projectDir string, cfg *types.Config) error {
 		filepath.Join(projectDir, cfg.Paths.Tasks, "completed"),
 		filepath.Join(projectDir, cfg.Paths.Workspaces),
 		filepath.Join(projectDir, cfg.Paths.Logs),
+		filepath.Join(projectDir, cfg.Paths.Source),
 	}
 
 	for _, dir := range dirs {

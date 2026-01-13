@@ -73,11 +73,11 @@ The daemon will:
 - Process tasks through the workflow
 - Handle handoffs and merges automatically
 
-### 4. Submit Tasks
+### 4. Add Tasks
 
 **Option A**: Use the CLI
 ```bash
-overseer submit my-feature.md
+overseer add my-feature.md
 ```
 
 **Option B**: Drop a markdown file in `.overseer/requests/`
@@ -99,7 +99,7 @@ The daemon will automatically pick up new files.
 |---------|-------------|
 | `overseer init` | Initialize Overseer in current directory |
 | `overseer daemon` | Start the background daemon |
-| `overseer submit <file>` | Submit a task request |
+| `overseer add <file>` | Add a task request |
 | `overseer list` | List all tasks by state |
 | `overseer status [id]` | Show task status (all active or specific) |
 | `overseer approve <id>` | Approve a task awaiting review |

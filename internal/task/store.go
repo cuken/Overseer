@@ -24,7 +24,8 @@ func NewStore(tasksDir string) *Store {
 	}
 }
 
-// Save persists a task to the appropriate state directory
+// Save persists a task to the appropriate state directory.
+// It ensures that the task only exists in one state directory.
 func (s *Store) Save(task *types.Task) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,6 +43,19 @@ func (s *Store) Save(task *types.Task) error {
 
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write task file: %w", err)
+	}
+
+	// Cleanup any other copies in different state directories
+	states := []string{"active", "pending", "review", "completed"}
+	currentStateDir := filepath.Base(dir)
+	for _, stateDir := range states {
+		if stateDir == currentStateDir {
+			continue
+		}
+		otherPath := filepath.Join(s.baseDir, stateDir, task.ID+".yaml")
+		if _, err := os.Stat(otherPath); err == nil {
+			os.Remove(otherPath)
+		}
 	}
 
 	return nil
@@ -131,7 +145,7 @@ func (s *Store) Move(task *types.Task, oldState, newState types.TaskState) error
 		return fmt.Errorf("failed to create directory %s: %w", newDir, err)
 	}
 
-	// Write to new location first
+	// Write to new location
 	data, err := yaml.Marshal(task)
 	if err != nil {
 		return fmt.Errorf("failed to marshal task: %w", err)
@@ -141,8 +155,23 @@ func (s *Store) Move(task *types.Task, oldState, newState types.TaskState) error
 		return fmt.Errorf("failed to write task file: %w", err)
 	}
 
-	// Remove from old location
-	os.Remove(oldPath)
+	// Only remove from old location if it's actually different
+	if oldPath != newPath {
+		os.Remove(oldPath)
+	}
+
+	// Also cleanup any other copies, just in case
+	states := []string{"active", "pending", "review", "completed"}
+	currentStateDir := filepath.Base(newDir)
+	for _, stateDir := range states {
+		if stateDir == currentStateDir {
+			continue
+		}
+		otherPath := filepath.Join(s.baseDir, stateDir, task.ID+".yaml")
+		if _, err := os.Stat(otherPath); err == nil {
+			os.Remove(otherPath)
+		}
+	}
 
 	return nil
 }

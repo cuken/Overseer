@@ -23,6 +23,7 @@ type Agent struct {
 	promptBuilder  *PromptBuilder
 	workspaceDir   string
 	projectDir     string
+	sourceDir      string
 	messages       []ChatMessage
 	toolExecutor   ToolExecutor
 	generation     int
@@ -35,7 +36,7 @@ type ToolExecutor interface {
 }
 
 // NewAgent creates a new agent for a task
-func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, projectDir string) *Agent {
+func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, projectDir, sourceDir string) *Agent {
 	workspaceDir := filepath.Join(projectDir, ".overseer", "workspaces", task.ID)
 	os.MkdirAll(workspaceDir, 0755)
 
@@ -46,6 +47,7 @@ func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, proje
 		promptBuilder:  NewPromptBuilder(),
 		workspaceDir:   workspaceDir,
 		projectDir:     projectDir,
+		sourceDir:      sourceDir,
 		messages:       make([]ChatMessage, 0),
 		generation:     0,
 	}
@@ -170,6 +172,8 @@ func (a *Agent) initializeSession() error {
 	data := PromptData{
 		Task:          a.task,
 		WorkspaceDir:  a.workspaceDir,
+		ProjectDir:    a.projectDir,
+		SourceDir:     a.sourceDir,
 		ContextStatus: a.contextTracker.Status(),
 	}
 	if a.toolExecutor != nil {

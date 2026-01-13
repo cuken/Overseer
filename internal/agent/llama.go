@@ -131,9 +131,7 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 	}
 
 	baseURL := strings.TrimSuffix(c.serverURL, "/")
-	if strings.HasSuffix(baseURL, "/v1") {
-		baseURL = strings.TrimSuffix(baseURL, "/v1")
-	}
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		baseURL+"/v1/chat/completions", bytes.NewReader(body))
@@ -185,9 +183,7 @@ func (c *LlamaClient) Complete(ctx context.Context, prompt string, stop []string
 	baseURL := strings.TrimSuffix(c.serverURL, "/")
 	// Note: completion endpoint is usually at root or /completion directly, not under v1
 	// checking if user provided /v1 and removing it just in case our path is relative to root
-	if strings.HasSuffix(baseURL, "/v1") {
-		baseURL = strings.TrimSuffix(baseURL, "/v1")
-	}
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		baseURL+"/completion", bytes.NewReader(body))

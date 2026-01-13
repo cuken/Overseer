@@ -64,8 +64,6 @@ var verbose bool
 
 func init() {
 	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
-	rootCmd.AddCommand(daemonCmd)
-	// ... rest of init
 }
 
 var initCmd = &cobra.Command{
@@ -106,20 +104,20 @@ var initCmd = &cobra.Command{
 		fmt.Printf("  %s/{active,pending,review,completed}/\n", cfg.Paths.Tasks)
 		fmt.Printf("  %s/\n", cfg.Paths.Workspaces)
 		fmt.Printf("  %s/\n", cfg.Paths.Logs)
+		fmt.Printf("  %s/\n", cfg.Paths.Source)
 		fmt.Println("\nEdit .overseer/config.yaml to customize settings.")
-		fmt.Println("Drop .md files in .overseer/requests/ to submit tasks.")
-		fmt.Println("\nNext steps:")
+		fmt.Println("Drop .md files in .overseer/requests/ to add tasks.")
 		fmt.Println("  1. Start llama.cpp server: llama-server -m <model> --port 8080")
 		fmt.Println("  2. Run the daemon: overseer daemon")
-		fmt.Println("  3. Submit a task: overseer submit task.md")
+		fmt.Println("  3. Add a task: overseer add task.md")
 		return nil
 	},
 }
 
-var submitCmd = &cobra.Command{
-	Use:   "submit <file.md>",
-	Short: "Submit a new task request",
-	Long:  `Submits a markdown file as a new task request. The file will be copied to the requests directory.`,
+var addCmd = &cobra.Command{
+	Use:   "add <file.md>",
+	Short: "Add a new task request",
+	Long:  `Adds a markdown file as a new task request. The file will be copied to the requests directory.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectDir, err := config.GetProjectDir()
@@ -145,7 +143,7 @@ var submitCmd = &cobra.Command{
 			return fmt.Errorf("failed to write request: %w", err)
 		}
 
-		fmt.Printf("Submitted request: %s\n", filename)
+		fmt.Printf("Added request: %s\n", filename)
 		fmt.Printf("Location: %s\n", dstPath)
 		fmt.Println("\nThe daemon will pick this up automatically if running.")
 		fmt.Println("Run 'overseer list' to see task status.")
@@ -296,7 +294,9 @@ var approveCmd = &cobra.Command{
 		case types.PhaseDebug:
 			newState = types.StateDebugging
 		default:
+			// If phase is unknown or "review", default to planning and reset phase to "plan"
 			newState = types.StatePlanning
+			t.Phase = types.PhasePlan
 		}
 
 		if err := task.TransitionTo(t, newState); err != nil {
@@ -358,7 +358,7 @@ var logsCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(submitCmd)
+	rootCmd.AddCommand(addCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(approveCmd)

@@ -138,6 +138,7 @@ type PathsConfig struct {
 	Tasks      string `yaml:"tasks" mapstructure:"tasks"`
 	Workspaces string `yaml:"workspaces" mapstructure:"workspaces"`
 	Logs       string `yaml:"logs" mapstructure:"logs"`
+	Source     string `yaml:"source" mapstructure:"source"`
 }
 
 // Config is the root configuration structure
@@ -178,6 +179,7 @@ func DefaultConfig() *Config {
 			Tasks:      ".overseer/tasks",
 			Workspaces: ".overseer/workspaces",
 			Logs:       ".overseer/logs",
+			Source:     "src",
 		},
 	}
 }

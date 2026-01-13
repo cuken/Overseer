@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"time"
 
 	"github.com/cuken/overseer/internal/agent"
@@ -135,8 +136,9 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 		// Check if approval is required
 		if t.RequiresApproval {
 			log.Printf("[Worker %d] Task %s requires approval", w.id, t.ID[:8])
+			oldState := t.State
 			if err := task.TransitionTo(t, types.StateReview); err == nil {
-				w.store.Move(t, t.State, types.StateReview)
+				w.store.Move(t, oldState, types.StateReview)
 			}
 			return nil
 		}
@@ -204,7 +206,7 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 	}
 
 	// Create agent
-	ag := agent.NewAgent(t, w.llamaClient, w.cfg.Llama, w.projectDir)
+	ag := agent.NewAgent(t, w.llamaClient, w.cfg.Llama, w.projectDir, filepath.Join(w.projectDir, w.cfg.Paths.Source))
 
 	// Set up tool executor
 	var mcpExecutor agent.ToolExecutor
@@ -294,7 +296,7 @@ func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
 		{
 			Name:        "update_task_state",
 			Description: "Update the state and phase of the current task. Use this to signal completion (new_state='completed') or phase change.",
-			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["planning", "implementing", "testing", "debugging", "review", "merging", "completed", "blocked"]}, "new_phase": {"type": "string", "description": "The new phase (e.g. 'implement', 'test')"}, "reason": {"type": "string"}}, "required": ["new_state", "reason"]}`,
+			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["planning", "implementing", "testing", "debugging", "review", "merging", "completed", "blocked"]}, "new_phase": {"type": "string", "description": "The new execution phase ('plan', 'implement', 'test', 'debug'). Optional, defaults to current phase."}, "reason": {"type": "string"}}, "required": ["new_state", "reason"]}`,
 		},
 	}
 	if e.mcpExecutor != nil {
