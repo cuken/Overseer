@@ -92,8 +92,12 @@ var initCmd = &cobra.Command{
 			if err := g.Init(); err != nil {
 				return fmt.Errorf("failed to init git: %w", err)
 			}
-			// Create initial commit to establish main/master branch
-			if err := g.CommitAllowEmpty("Initial commit"); err != nil {
+		}
+
+		// Ensure repo has at least one commit (required for branching)
+		if !g.HasCommits() {
+			fmt.Println("Creating initial commit...")
+			if err := g.CommitAllowEmpty("Hic sunt dracones"); err != nil {
 				return fmt.Errorf("failed to create initial commit: %w", err)
 			}
 		}
@@ -282,17 +286,17 @@ var approveCmd = &cobra.Command{
 		t.RequiresApproval = false
 		oldState := t.State
 
-		// Determine next state based on phase
+			// Determine next state based on phase
 		var newState types.TaskState
 		switch t.Phase {
 		case types.PhasePlan:
 			newState = types.StatePlanning
 		case types.PhaseImplement:
 			newState = types.StateImplementing
-		case types.PhaseTest:
-			newState = types.StateTesting
-		case types.PhaseDebug:
-			newState = types.StateDebugging
+		case types.PhaseTest, types.PhaseDebug:
+			// If we're approving a task in test/debug phase, it means the work is accepted
+			// and ready to be merged.
+			newState = types.StateMerging
 		default:
 			// If phase is unknown or "review", default to planning and reset phase to "plan"
 			newState = types.StatePlanning

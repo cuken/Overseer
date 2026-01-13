@@ -98,9 +98,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	cancel()
 
-	// Connect to MCP servers
+	// Connect to MCP servers (run from project directory so relative paths work)
 	log.Printf("[Daemon] Connecting to MCP servers...")
-	if err := d.mcpClient.Connect(ctx, d.cfg.MCP.Servers); err != nil {
+	if err := d.mcpClient.Connect(ctx, d.cfg.MCP.Servers, d.projectDir); err != nil {
 		log.Printf("[Daemon] Warning: MCP connection failed: %v", err)
 	}
 	defer d.mcpClient.Close()

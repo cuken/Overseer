@@ -57,12 +57,13 @@ func NewClient() *Client {
 }
 
 // Connect establishes connections to all configured MCP servers
-func (c *Client) Connect(ctx context.Context, servers []types.MCPServer) error {
+// workingDir is the directory where MCP server processes will be started
+func (c *Client) Connect(ctx context.Context, servers []types.MCPServer, workingDir string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	for _, cfg := range servers {
-		if err := c.connectServer(ctx, cfg); err != nil {
+		if err := c.connectServer(ctx, cfg, workingDir); err != nil {
 			log.Printf("[MCP] Failed to connect to %s: %v", cfg.Name, err)
 			continue
 		}
@@ -72,8 +73,8 @@ func (c *Client) Connect(ctx context.Context, servers []types.MCPServer) error {
 	return nil
 }
 
-func (c *Client) connectServer(ctx context.Context, cfg types.MCPServer) error {
-	transport, err := NewTransport(cfg.Command, cfg.Args, cfg.Env)
+func (c *Client) connectServer(ctx context.Context, cfg types.MCPServer, workingDir string) error {
+	transport, err := NewTransport(cfg.Command, cfg.Args, cfg.Env, workingDir)
 	if err != nil {
 		return fmt.Errorf("failed to create transport: %w", err)
 	}

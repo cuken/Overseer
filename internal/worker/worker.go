@@ -149,20 +149,26 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 		// Handle agent result
 		switch agentResult {
 		case AgentResultComplete:
-			// Agent completed its work, check phase
-			if t.Phase == types.PhaseDebug || t.Phase == types.PhaseTest {
-				// Move to merging if not already there
-				if t.State != types.StateMerging {
-					if err := task.TransitionTo(t, types.StateMerging); err == nil {
-						w.store.Save(t)
-					}
-				}
+			// Agent completed its work - check if ready to merge
+			// First priority: if state is already merging, do the merge
+			if t.State == types.StateMerging {
+				return w.attemptMerge(ctx, t)
+			}
 
-				// If ready to merge, do it
-				if t.State == types.StateMerging {
+			// Second: if we're in test/debug phase and tests passed, transition to merging
+			if t.Phase == types.PhaseDebug || t.Phase == types.PhaseTest {
+				if err := task.TransitionTo(t, types.StateMerging); err == nil {
+					w.store.Save(t)
 					return w.attemptMerge(ctx, t)
 				}
+				// If transition failed, log it but continue - agent may need to do more work
+				log.Printf("[Worker %d] Could not transition to merging: state=%s, phase=%s",
+					w.id, t.State, t.Phase)
 			}
+
+			// Agent completed but not ready to merge - continue the loop
+			// The agent should have updated state/phase appropriately
+			continue
 		case AgentResultHandoff:
 			// Agent needs handoff, continue with fresh agent
 			log.Printf("[Worker %d] Agent handoff for task %s (generation %d)",
@@ -250,6 +256,21 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 func (w *Worker) attemptMerge(ctx context.Context, t *types.Task) error {
 	log.Printf("[Worker %d] Attempting merge for task %s", w.id, t.ID[:8])
 
+	// Safety net: commit any uncommitted changes the agent left behind
+	if hasChanges, _ := w.gitClient.HasChanges(); hasChanges {
+		log.Printf("[Worker %d] Found uncommitted changes, committing before merge", w.id)
+		if err := w.gitClient.AddAll(); err != nil {
+			log.Printf("[Worker %d] Failed to stage changes: %v", w.id, err)
+		} else {
+			commitMsg := fmt.Sprintf("[%s] Auto-commit before merge\n\nTask: %s", t.ID[:8], t.Title)
+			if err := w.gitClient.Commit(commitMsg); err != nil {
+				log.Printf("[Worker %d] Failed to commit changes: %v", w.id, err)
+			} else {
+				log.Printf("[Worker %d] Auto-committed changes", w.id)
+			}
+		}
+	}
+
 	result, err := w.merger.AttemptMerge(t)
 	if err != nil {
 		log.Printf("[Worker %d] Merge error: %v", w.id, err)
@@ -295,8 +316,8 @@ func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
 	tools := []agent.ToolInfo{
 		{
 			Name:        "update_task_state",
-			Description: "Update the state and phase of the current task. Use this to signal completion (new_state='completed') or phase change.",
-			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["planning", "implementing", "testing", "debugging", "review", "merging", "completed", "blocked"]}, "new_phase": {"type": "string", "description": "The new execution phase ('plan', 'implement', 'test', 'debug'). Optional, defaults to current phase."}, "reason": {"type": "string"}}, "required": ["new_state", "reason"]}`,
+			Description: "Update the state and phase of the current task. Use this to progress through the workflow: planning→implementing→testing→debugging→merging. Always provide BOTH new_state and new_phase together. Do NOT use 'review' - complete the full workflow instead.",
+			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["implementing", "testing", "debugging", "merging", "blocked"], "description": "The workflow state to transition to. Use: implementing (after planning), testing (after implementing), debugging (if tests fail), merging (when tests pass), blocked (if stuck)."}, "new_phase": {"type": "string", "enum": ["implement", "test", "debug"], "description": "The execution phase. Use: implement (with implementing state), test (with testing state), debug (with debugging state)."}, "reason": {"type": "string", "description": "Brief explanation for the transition"}}, "required": ["new_state", "reason"]}`,
 		},
 	}
 	if e.mcpExecutor != nil {

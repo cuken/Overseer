@@ -51,8 +51,12 @@ type JSONRPCError struct {
 }
 
 // NewTransport creates a new transport for an MCP server
-func NewTransport(command string, args []string, env []string) (*Transport, error) {
+// workingDir sets the working directory for the spawned process
+func NewTransport(command string, args []string, env []string, workingDir string) (*Transport, error) {
 	cmd := exec.Command(command, args...)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	if len(env) > 0 {
 		cmd.Env = append(cmd.Environ(), env...)
 	}

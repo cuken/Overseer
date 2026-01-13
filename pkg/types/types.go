@@ -75,13 +75,15 @@ func (s TaskState) IsActive() bool {
 
 // CanTransitionTo checks if a state transition is valid
 func (s TaskState) CanTransitionTo(next TaskState) bool {
+	// State machine: review is only accessible after testing (not during planning/implementing)
+	// This prevents agents from prematurely requesting human review
 	validTransitions := map[TaskState][]TaskState{
 		StatePending:      {StatePlanning},
-		StatePlanning:     {StateImplementing, StateReview, StateBlocked},
-		StateImplementing: {StateTesting, StateReview, StateBlocked},
-		StateTesting:      {StateDebugging, StateMerging, StateReview},
-		StateDebugging:    {StateTesting, StateReview, StateBlocked},
-		StateReview:       {StatePlanning, StateImplementing, StateMerging, StateBlocked},
+		StatePlanning:     {StateImplementing, StateBlocked},              // No review from planning
+		StateImplementing: {StateTesting, StateBlocked},                   // No review from implementing
+		StateTesting:      {StateDebugging, StateMerging, StateReview},    // Review only after testing
+		StateDebugging:    {StateTesting, StateReview, StateBlocked},      // Review allowed from debugging
+		StateReview:       {StatePlanning, StateImplementing, StateTesting, StateMerging, StateBlocked},
 		StateMerging:      {StateCompleted, StateConflict},
 		StateConflict:     {StateBlocked},
 		StateBlocked:      {StatePending, StatePlanning, StateImplementing},
@@ -179,7 +181,7 @@ func DefaultConfig() *Config {
 			Tasks:      ".overseer/tasks",
 			Workspaces: ".overseer/workspaces",
 			Logs:       ".overseer/logs",
-			Source:     "src",
+			Source:     ".", // Project root - agent will work with entire codebase
 		},
 	}
 }

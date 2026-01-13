@@ -127,7 +127,11 @@ func EnsureDirectories(projectDir string, cfg *types.Config) error {
 		filepath.Join(projectDir, cfg.Paths.Tasks, "completed"),
 		filepath.Join(projectDir, cfg.Paths.Workspaces),
 		filepath.Join(projectDir, cfg.Paths.Logs),
-		filepath.Join(projectDir, cfg.Paths.Source),
+	}
+
+	// Only create source directory if it's not "." (project root)
+	if cfg.Paths.Source != "." && cfg.Paths.Source != "" {
+		dirs = append(dirs, filepath.Join(projectDir, cfg.Paths.Source))
 	}
 
 	for _, dir := range dirs {

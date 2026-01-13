@@ -37,18 +37,36 @@ func (m *Merger) AttemptMerge(task *types.Task) (*MergeResult, error) {
 	}
 
 	mergeTarget := m.branchMgr.GetMergeTarget()
+	currentBranch := task.Branch
 
-	// Stash any uncommitted changes
+	// Clean up any in-progress merge from previous failed attempt
+	if m.IsMerging() {
+		m.git.run("merge", "--abort")
+	}
+
+	// Stash any uncommitted changes on the task branch
 	hasChanges, _ := m.git.HasChanges()
+	stashed := false
 	if hasChanges {
 		if err := m.git.Stash(); err != nil {
 			return nil, fmt.Errorf("failed to stash changes: %w", err)
 		}
-		defer m.git.StashPop()
+		stashed = true
+	}
+
+	// Helper to restore stash to original branch on failure
+	restoreStash := func() {
+		if stashed {
+			// Switch back to task branch before popping stash
+			if err := m.git.Checkout(currentBranch); err == nil {
+				m.git.StashPop()
+			}
+		}
 	}
 
 	// Checkout merge target
 	if err := m.git.Checkout(mergeTarget); err != nil {
+		restoreStash() // Restore stash to task branch
 		return nil, fmt.Errorf("failed to checkout %s: %w", mergeTarget, err)
 	}
 
@@ -67,11 +85,13 @@ func (m *Merger) AttemptMerge(task *types.Task) (*MergeResult, error) {
 		if conflictErr != nil || len(conflicts) == 0 {
 			// Abort and return error
 			m.git.run("merge", "--abort")
+			restoreStash() // Restore stash to task branch
 			return nil, fmt.Errorf("merge failed: %w", err)
 		}
 
 		// Abort the failed merge
 		m.git.run("merge", "--abort")
+		restoreStash() // Restore stash to task branch
 
 		return &MergeResult{
 			Success:       false,
@@ -80,24 +100,51 @@ func (m *Merger) AttemptMerge(task *types.Task) (*MergeResult, error) {
 		}, nil
 	}
 
+	// Check if there are actually staged changes to commit
+	hasStagedChanges, _ := m.git.HasStagedChanges()
+	if !hasStagedChanges {
+		// Nothing to merge - branches are identical
+		// This can happen if task branch was already merged or has no changes
+		m.git.run("merge", "--abort")
+		if stashed {
+			m.git.run("stash", "drop")
+		}
+		return &MergeResult{
+			Success: true,
+			Message: fmt.Sprintf("Branch %s already up to date with %s", task.Branch, mergeTarget),
+		}, nil
+	}
+
 	// Merge succeeded, commit it
 	commitMsg := fmt.Sprintf("Merge %s: %s\n\nTask ID: %s\nMerged by: Overseer",
 		task.Branch, task.Title, task.ID)
 
 	if err := m.git.Commit(commitMsg); err != nil {
-		// Might be nothing to commit if fast-forward
+		// Commit failed - get more details
+		status, _ := m.git.Status()
 		m.git.run("merge", "--abort")
-		return nil, fmt.Errorf("failed to commit merge: %w", err)
+		restoreStash() // Restore stash to task branch
+		return nil, fmt.Errorf("failed to commit merge (status: %s): %w", status, err)
 	}
 
 	// Push if configured
 	if m.autoPush && m.git.HasRemote() {
 		if err := m.git.Push(); err != nil {
+			// Merge succeeded but push failed - stash is no longer needed
+			// (changes are committed to main), so drop it
+			if stashed {
+				m.git.run("stash", "drop")
+			}
 			return &MergeResult{
 				Success: true,
 				Message: "Merge succeeded but push failed: " + err.Error(),
 			}, nil
 		}
+	}
+
+	// Success - stash is no longer needed, drop it
+	if stashed {
+		m.git.run("stash", "drop")
 	}
 
 	return &MergeResult{

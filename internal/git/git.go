@@ -29,6 +29,12 @@ func (g *Git) Init() error {
 	return err
 }
 
+// HasCommits checks if the repository has any commits
+func (g *Git) HasCommits() bool {
+	_, err := g.run("rev-parse", "HEAD")
+	return err == nil
+}
+
 // CurrentBranch returns the name of the current branch
 func (g *Git) CurrentBranch() (string, error) {
 	out, err := g.run("rev-parse", "--abbrev-ref", "HEAD")
@@ -70,8 +76,9 @@ func (g *Git) AddAll() error {
 }
 
 // Commit creates a new commit with the given message
+// Uses stdin to handle multi-line messages and special characters safely
 func (g *Git) Commit(message string) error {
-	_, err := g.run("commit", "-m", message)
+	_, err := g.runWithInput(message, "commit", "-F", "-")
 	return err
 }
 
@@ -110,13 +117,27 @@ func (g *Git) Status() (string, error) {
 	return g.run("status", "--porcelain")
 }
 
-// HasChanges checks if there are uncommitted changes
+// HasChanges checks if there are uncommitted changes (staged or unstaged)
 func (g *Git) HasChanges() (bool, error) {
 	status, err := g.Status()
 	if err != nil {
 		return false, err
 	}
 	return strings.TrimSpace(status) != "", nil
+}
+
+// HasStagedChanges checks if there are staged changes ready to commit
+func (g *Git) HasStagedChanges() (bool, error) {
+	out, err := g.run("diff", "--cached", "--quiet")
+	if err != nil {
+		// Exit code 1 means there ARE staged changes
+		if strings.Contains(err.Error(), "exit status 1") {
+			return true, nil
+		}
+		return false, err
+	}
+	// Exit code 0 means no staged changes
+	return out != "", nil
 }
 
 // Stash stashes current changes

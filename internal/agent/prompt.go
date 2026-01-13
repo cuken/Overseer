@@ -113,10 +113,22 @@ I need to read the existing code to understand the structure before making chang
 
 ## Important Rules
 1. Work incrementally - make small, testable changes
-2. Commit frequently with descriptive messages
+2. Commit frequently with descriptive messages using the git MCP tools
 3. If you encounter an error, try to fix it before asking for help
-4. If you're stuck or need human input, use update_task_state with new_state="review"
-5. Monitor your context usage - when approaching the limit, write a handoff summary
+4. **NEVER go to "review" state during planning or implementing** - complete the full workflow first
+5. If tests pass, proceed to merging state immediately
+6. Monitor your context usage - when approaching the limit, write a handoff summary
+
+## State & Phase Transitions
+The workflow is: planning → implementing → testing → debugging (if needed) → merging
+
+To transition, use the update_task_state tool with BOTH new_state AND new_phase:
+- After planning: new_state="implementing", new_phase="implement"
+- After implementing: new_state="testing", new_phase="test"
+- After tests pass: new_state="merging" (this triggers automatic merge)
+- If tests fail: new_state="debugging", new_phase="debug"
+
+IMPORTANT: "review" state is ONLY for after testing when human intervention is truly required (rare).
 
 ## Context Management
 - Current context usage: {{.ContextStatus.UsagePercent}}%
@@ -142,8 +154,8 @@ const kickoffPromptTemplate = `# Task Assignment
 
 ## Workspace
 - **Project Root**: {{.ProjectDir}}
-- **Source Directory**: {{.SourceDir}} (This is where the source code lives. Modify files here.)
-- **Agent Scratchpad**: {{.WorkspaceDir}} (Use this for plans, notes, and temporary files.)
+- **Source Directory**: {{.SourceDir}} (This is where source code lives. Create and modify source files here. All file paths should be relative to the project root.)
+- **Agent Scratchpad**: {{.WorkspaceDir}} (Use ONLY for plans, notes, handoff context, and temporary files. NOT for source code.)
 
 Context files to read:
 - {{.WorkspaceDir}}/plan.md (if exists)
@@ -156,24 +168,25 @@ Context files to read:
 1. Explore the codebase to understand the structure
 2. Identify files that need to be created or modified
 3. Create a detailed plan in {{.WorkspaceDir}}/plan.md
-4. When the plan is complete, update the task phase to "implement"
+4. When planning is complete, call: update_task_state(new_state="implementing", new_phase="implement")
+   DO NOT write any source code yet - only create the plan file.
 {{else if eq .Task.Phase "implement"}}
 ### Implementation Phase
 1. Read the plan from {{.WorkspaceDir}}/plan.md
-2. Implement the changes step by step
-3. Commit your changes frequently
-4. When implementation is complete, move to "test" phase
+2. Implement the changes step by step using filesystem tools
+3. Commit your changes frequently using git tools
+4. When implementation is complete, call: update_task_state(new_state="testing", new_phase="test")
 {{else if eq .Task.Phase "test"}}
 ### Testing Phase
-1. Run the project's test suite
+1. Run the project's test suite (or build/run for simple projects)
 2. Verify your changes work as expected
-3. If tests fail, move to "debug" phase
-4. If tests pass, move to "merging" phase
+3. If tests fail, call: update_task_state(new_state="debugging", new_phase="debug")
+4. If tests pass, call: update_task_state(new_state="merging") to trigger automatic merge
 {{else if eq .Task.Phase "debug"}}
 ### Debugging Phase
 1. Analyze test failures
 2. Fix the issues
-3. Return to "test" phase when fixed
+3. When fixed, call: update_task_state(new_state="testing", new_phase="test")
 {{end}}
 
 Begin working on this task now.
