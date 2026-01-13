@@ -67,26 +67,22 @@ func WriteDefault(path string) error {
 	setDefaults(v, defaults)
 
 	// Add default MCP servers
+	// Note: git and fetch are Python-based and use uvx, filesystem is npm-based and uses npx
 	v.Set("mcp.servers", []map[string]interface{}{
 		{
 			"name":    "filesystem",
 			"command": "npx",
-			"args":    []string{"-y", "@anthropic/mcp-server-filesystem", "."},
-		},
-		{
-			"name":    "shell",
-			"command": "npx",
-			"args":    []string{"-y", "@anthropic/mcp-server-shell"},
+			"args":    []string{"-y", "@modelcontextprotocol/server-filesystem", "."},
 		},
 		{
 			"name":    "git",
-			"command": "npx",
-			"args":    []string{"-y", "@anthropic/mcp-server-git"},
+			"command": "uvx",
+			"args":    []string{"mcp-server-git"},
 		},
 		{
 			"name":    "fetch",
-			"command": "npx",
-			"args":    []string{"-y", "@anthropic/mcp-server-fetch"},
+			"command": "uvx",
+			"args":    []string{"mcp-server-fetch"},
 		},
 	})
 

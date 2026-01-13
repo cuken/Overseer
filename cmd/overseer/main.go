@@ -11,6 +11,7 @@ import (
 
 	"github.com/cuken/overseer/internal/config"
 	"github.com/cuken/overseer/internal/daemon"
+	"github.com/cuken/overseer/internal/git"
 	"github.com/cuken/overseer/internal/task"
 	"github.com/cuken/overseer/pkg/types"
 )
@@ -53,8 +54,18 @@ var daemonCmd = &cobra.Command{
 			return fmt.Errorf("failed to create daemon: %w", err)
 		}
 
+		d.SetVerbose(verbose)
+
 		return d.Run(context.Background())
 	},
+}
+
+var verbose bool
+
+func init() {
+	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	rootCmd.AddCommand(daemonCmd)
+	// ... rest of init
 }
 
 var initCmd = &cobra.Command{
@@ -74,6 +85,19 @@ var initCmd = &cobra.Command{
 
 		if err := config.EnsureDirectories(cwd, cfg); err != nil {
 			return fmt.Errorf("failed to create directories: %w", err)
+		}
+
+		// Initialize git if needed
+		g := git.New(cwd)
+		if !g.IsRepo() {
+			fmt.Println("Initializing git repository...")
+			if err := g.Init(); err != nil {
+				return fmt.Errorf("failed to init git: %w", err)
+			}
+			// Create initial commit to establish main/master branch
+			if err := g.CommitAllowEmpty("Initial commit"); err != nil {
+				return fmt.Errorf("failed to create initial commit: %w", err)
+			}
 		}
 
 		fmt.Println("Initialized overseer in", cwd)

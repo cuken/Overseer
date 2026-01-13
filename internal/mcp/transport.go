@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -13,15 +14,17 @@ import (
 
 // Transport handles communication with an MCP server process
 type Transport struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	scanner   *bufio.Scanner
-	mu        sync.Mutex
-	requestID atomic.Int64
-	responses map[int64]chan *JSONRPCResponse
-	respMu    sync.RWMutex
-	closed    bool
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         io.ReadCloser
+	scanner        *bufio.Scanner
+	mu             sync.Mutex
+	requestID      atomic.Int64
+	responses      map[int64]chan *JSONRPCResponse
+	respMu         sync.RWMutex
+	closed         bool
+	stderr         io.ReadCloser
+	requestHandler func(context.Context, *JSONRPCRequest) (interface{}, error)
 }
 
 // JSONRPCRequest represents a JSON-RPC 2.0 request
@@ -42,8 +45,8 @@ type JSONRPCResponse struct {
 
 // JSONRPCError represents a JSON-RPC 2.0 error
 type JSONRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
 }
 
@@ -65,9 +68,17 @@ func NewTransport(command string, args []string, env []string) (*Transport, erro
 		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		stdin.Close()
+		stdout.Close()
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
 		stdout.Close()
+		stderr.Close()
 		return nil, fmt.Errorf("failed to start process: %w", err)
 	}
 
@@ -75,14 +86,22 @@ func NewTransport(command string, args []string, env []string) (*Transport, erro
 		cmd:       cmd,
 		stdin:     stdin,
 		stdout:    stdout,
+		stderr:    stderr,
 		scanner:   bufio.NewScanner(stdout),
 		responses: make(map[int64]chan *JSONRPCResponse),
 	}
 
 	// Start response reader
 	go t.readResponses()
+	// Start stderr logger
+	go t.logStderr()
 
 	return t, nil
+}
+
+// SetRequestHandler sets the handler for incoming requests
+func (t *Transport) SetRequestHandler(handler func(context.Context, *JSONRPCRequest) (interface{}, error)) {
+	t.requestHandler = handler
 }
 
 // Send sends a request and waits for a response
@@ -170,6 +189,23 @@ func (t *Transport) readResponses() {
 			continue
 		}
 
+		// Try parsing as generic JSON to determine type
+		var generic map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &generic); err != nil {
+			continue
+		}
+
+		// Check if it's a request (has "method")
+		if _, isRequest := generic["method"]; isRequest {
+			var req JSONRPCRequest
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				continue
+			}
+			go t.handleRequest(&req)
+			continue
+		}
+
+		// Otherwise assume it's a response
 		var resp JSONRPCResponse
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
 			continue
@@ -188,6 +224,42 @@ func (t *Transport) readResponses() {
 	}
 }
 
+func (t *Transport) handleRequest(req *JSONRPCRequest) {
+	if t.requestHandler == nil {
+		return
+	}
+
+	result, err := t.requestHandler(context.Background(), req)
+
+	resp := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+	}
+
+	if err != nil {
+		resp.Error = &JSONRPCError{
+			Code:    -32000,
+			Message: err.Error(),
+		}
+	} else {
+		resBytes, _ := json.Marshal(result)
+		resp.Result = resBytes
+	}
+
+	data, _ := json.Marshal(resp)
+
+	t.mu.Lock()
+	fmt.Fprintf(t.stdin, "%s\n", data)
+	t.mu.Unlock()
+}
+
+func (t *Transport) logStderr() {
+	scanner := bufio.NewScanner(t.stderr)
+	for scanner.Scan() {
+		log.Printf("[MCP %p stderr] %s", t, scanner.Text())
+	}
+}
+
 // Close shuts down the transport
 func (t *Transport) Close() error {
 	if t.closed {
@@ -197,6 +269,7 @@ func (t *Transport) Close() error {
 
 	t.stdin.Close()
 	t.stdout.Close()
+	t.stderr.Close()
 
 	if t.cmd.Process != nil {
 		t.cmd.Process.Kill()

@@ -89,14 +89,16 @@ const systemPromptTemplate = `You are an autonomous coding agent managed by Over
 You have access to these tools:
 {{range .AvailableTools}}
 - **{{.Name}}**: {{.Description}}
+  Parameters:
+{{.Parameters}}
 {{end}}
 
 ## Response Format
 You must respond in a structured format. Each response should include:
 
+
 1. **Thinking**: Your analysis and reasoning (wrapped in <thinking> tags)
 2. **Tool Calls**: Any tools you need to execute (as JSON array)
-3. **State Updates**: Any state changes for the task
 
 Example response:
 <thinking>

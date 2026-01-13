@@ -15,16 +15,25 @@ import (
 
 // Worker processes tasks from the queue
 type Worker struct {
-	id           int
-	projectDir   string
-	cfg          *types.Config
-	store        *task.Store
-	queue        *task.Queue
-	mcpClient    *mcp.Client
-	gitClient    *git.Git
-	branchMgr    *git.BranchManager
-	merger       *git.Merger
-	llamaClient  *agent.LlamaClient
+	id          int
+	projectDir  string
+	cfg         *types.Config
+	store       *task.Store
+	queue       *task.Queue
+	mcpClient   *mcp.Client
+	gitClient   *git.Git
+	branchMgr   *git.BranchManager
+	merger      *git.Merger
+	llamaClient *agent.LlamaClient
+	verbose     bool
+}
+
+// SetVerbose enables verbose logging
+func (w *Worker) SetVerbose(v bool) {
+	w.verbose = v
+	if w.llamaClient != nil {
+		w.llamaClient.SetDebug(v)
+	}
 }
 
 // NewWorker creates a new worker
@@ -140,9 +149,15 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 		case AgentResultComplete:
 			// Agent completed its work, check phase
 			if t.Phase == types.PhaseDebug || t.Phase == types.PhaseTest {
-				// Move to merging
-				if err := task.TransitionTo(t, types.StateMerging); err == nil {
-					w.store.Save(t)
+				// Move to merging if not already there
+				if t.State != types.StateMerging {
+					if err := task.TransitionTo(t, types.StateMerging); err == nil {
+						w.store.Save(t)
+					}
+				}
+
+				// If ready to merge, do it
+				if t.State == types.StateMerging {
 					return w.attemptMerge(ctx, t)
 				}
 			}
@@ -192,10 +207,18 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 	ag := agent.NewAgent(t, w.llamaClient, w.cfg.Llama, w.projectDir)
 
 	// Set up tool executor
+	var mcpExecutor agent.ToolExecutor
 	if w.mcpClient != nil && w.mcpClient.IsConnected() {
-		toolExecutor := mcp.NewToolExecutor(w.mcpClient)
-		ag.SetToolExecutor(toolExecutor)
+		mcpExecutor = mcp.NewToolExecutor(w.mcpClient)
 	}
+
+	// Wrap with builtin tool executor
+	builtinExecutor := &BuiltinToolExecutor{
+		mcpExecutor: mcpExecutor,
+		task:        t,
+		store:       w.store,
+	}
+	ag.SetToolExecutor(builtinExecutor)
 
 	// Run agent with timeout
 	agentCtx, agentCancel := context.WithTimeout(ctx, 30*time.Minute)
@@ -205,6 +228,11 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 
 	// Update task from agent
 	*t = *ag.Task()
+
+	// Persist state changes (e.g. from XML state tags)
+	if err := w.store.Save(t); err != nil {
+		log.Printf("[Worker %d] Failed to save task state: %v", w.id, err)
+	}
 
 	if err != nil {
 		if err.Error() == "handoff required" {
@@ -252,4 +280,83 @@ func (w *Worker) attemptMerge(ctx context.Context, t *types.Task) error {
 	w.store.Save(t)
 
 	return nil
+}
+
+// BuiltinToolExecutor handles built-in tools and delegates to MCP
+type BuiltinToolExecutor struct {
+	mcpExecutor agent.ToolExecutor
+	task        *types.Task
+	store       *task.Store
+}
+
+func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
+	tools := []agent.ToolInfo{
+		{
+			Name:        "update_task_state",
+			Description: "Update the state and phase of the current task. Use this to signal completion (new_state='completed') or phase change.",
+			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["planning", "implementing", "testing", "debugging", "review", "merging", "completed", "blocked"]}, "new_phase": {"type": "string", "description": "The new phase (e.g. 'implement', 'test')"}, "reason": {"type": "string"}}, "required": ["new_state", "reason"]}`,
+		},
+	}
+	if e.mcpExecutor != nil {
+		tools = append(tools, e.mcpExecutor.AvailableTools()...)
+	}
+	return tools
+}
+
+func (e *BuiltinToolExecutor) Execute(ctx context.Context, call types.ToolCall) types.ToolResult {
+	if call.Name == "update_task_state" {
+		newStateStr, _ := call.Arguments["new_state"].(string)
+		newPhaseStr, _ := call.Arguments["new_phase"].(string)
+		reason, _ := call.Arguments["reason"].(string)
+
+		if newStateStr == "" {
+			return types.ToolResult{
+				CallID:  call.ID,
+				Success: false,
+				Error:   "new_state is required",
+			}
+		}
+
+		newState := types.TaskState(newStateStr)
+
+		// Use task package to transition if possible
+		if err := task.TransitionTo(e.task, newState); err != nil {
+			return types.ToolResult{
+				CallID:  call.ID,
+				Success: false,
+				Error:   fmt.Sprintf("Invalid state transition: %v", err),
+			}
+		}
+
+		if newPhaseStr != "" {
+			e.task.Phase = types.TaskPhase(newPhaseStr)
+		}
+
+		// Save the task state
+		if err := e.store.Save(e.task); err != nil {
+			return types.ToolResult{
+				CallID:  call.ID,
+				Success: false,
+				Error:   fmt.Sprintf("Failed to save task state: %v", err),
+			}
+		}
+
+		log.Printf("[Worker] Tool updated task state to %s (Reason: %s)", newState, reason)
+
+		return types.ToolResult{
+			CallID:  call.ID,
+			Success: true,
+			Output:  fmt.Sprintf("Task state successfully updated to %s", newState),
+		}
+	}
+
+	if e.mcpExecutor != nil {
+		return e.mcpExecutor.Execute(ctx, call)
+	}
+
+	return types.ToolResult{
+		CallID:  call.ID,
+		Success: false,
+		Error:   fmt.Sprintf("tool not found: %s", call.Name),
+	}
 }

@@ -22,9 +22,9 @@ func NewContextTracker(cfg types.LlamaConfig) *ContextTracker {
 	}
 }
 
-// AddTokens records token usage from a response
-func (c *ContextTracker) AddTokens(promptTokens, completionTokens int) {
-	c.tokensUsed += promptTokens + completionTokens
+// UpdateUsage updates the token usage based on the total reported by the LLM
+func (c *ContextTracker) UpdateUsage(totalTokens int) {
+	c.tokensUsed = totalTokens
 }
 
 // SetTokensUsed sets the total tokens used directly
@@ -88,11 +88,11 @@ func EstimateTokens(text string) int {
 
 // ContextStatus provides a summary of context state
 type ContextStatus struct {
-	TokensUsed       int
-	TokensRemaining  int
-	UsagePercent     float64
-	NeedsHandoff     bool
-	Generation       int
+	TokensUsed      int
+	TokensRemaining int
+	UsagePercent    float64
+	NeedsHandoff    bool
+	Generation      int
 }
 
 // Status returns the current context status

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cuken/overseer/pkg/types"
@@ -19,6 +21,12 @@ type LlamaClient struct {
 	maxTokens   int
 	temperature float64
 	client      *http.Client
+	debug       bool
+}
+
+// SetDebug enables debug logging
+func (c *LlamaClient) SetDebug(debug bool) {
+	c.debug = debug
 }
 
 // NewLlamaClient creates a new llama.cpp client
@@ -72,27 +80,42 @@ type ChatResponse struct {
 
 // CompletionRequest represents a request to the completions endpoint
 type CompletionRequest struct {
-	Prompt      string  `json:"prompt"`
-	MaxTokens   int     `json:"n_predict,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
+	Prompt      string   `json:"prompt"`
+	MaxTokens   int      `json:"n_predict,omitempty"`
+	Temperature float64  `json:"temperature,omitempty"`
 	Stop        []string `json:"stop,omitempty"`
-	Stream      bool    `json:"stream"`
+	Stream      bool     `json:"stream"`
 }
 
 // CompletionResponse represents a response from the completions endpoint
 type CompletionResponse struct {
-	Content          string `json:"content"`
-	Stop             bool   `json:"stop"`
-	TokensEvaluated  int    `json:"tokens_evaluated"`
-	TokensPredicted  int    `json:"tokens_predicted"`
-	Truncated        bool   `json:"truncated"`
+	Content         string `json:"content"`
+	Stop            bool   `json:"stop"`
+	TokensEvaluated int    `json:"tokens_evaluated"`
+	TokensPredicted int    `json:"tokens_predicted"`
+	Truncated       bool   `json:"truncated"`
 }
 
 // Chat sends a chat completion request
 func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatResponse, error) {
+	// Filter messages to avoid prefilling assistant response if not supported
+	// We use index-based filtering to ensure we ONLY remove the very last message
+	sanitizedMessages := make([]ChatMessage, 0, len(messages))
+	lastIdx := len(messages) - 1
+
+	for i, msg := range messages {
+		// specific check: if it's the last message and it's an assistant message, skip it
+		// to avoid "Assistant response prefill is incompatible with enable_thinking" error
+		if i == lastIdx && msg.Role == "assistant" {
+			log.Printf("[Llama] Dropping trailing assistant message (prefill) for compatibility")
+			continue
+		}
+		sanitizedMessages = append(sanitizedMessages, msg)
+	}
+
 	req := ChatRequest{
 		Model:       c.model,
-		Messages:    messages,
+		Messages:    sanitizedMessages,
 		MaxTokens:   c.maxTokens,
 		Temperature: c.temperature,
 		Stream:      false,
@@ -103,8 +126,17 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	if c.debug {
+		log.Printf("[Llama] Request: %s", string(body))
+	}
+
+	baseURL := strings.TrimSuffix(c.serverURL, "/")
+	if strings.HasSuffix(baseURL, "/v1") {
+		baseURL = strings.TrimSuffix(baseURL, "/v1")
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.serverURL+"/v1/chat/completions", bytes.NewReader(body))
+		baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -115,6 +147,12 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if c.debug {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("[Llama] Response: %s", string(bodyBytes))
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -144,8 +182,15 @@ func (c *LlamaClient) Complete(ctx context.Context, prompt string, stop []string
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	baseURL := strings.TrimSuffix(c.serverURL, "/")
+	// Note: completion endpoint is usually at root or /completion directly, not under v1
+	// checking if user provided /v1 and removing it just in case our path is relative to root
+	if strings.HasSuffix(baseURL, "/v1") {
+		baseURL = strings.TrimSuffix(baseURL, "/v1")
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.serverURL+"/completion", bytes.NewReader(body))
+		baseURL+"/completion", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

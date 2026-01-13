@@ -101,54 +101,54 @@ func (s TaskState) CanTransitionTo(next TaskState) bool {
 
 // MCPServer represents configuration for an MCP server
 type MCPServer struct {
-	Name    string   `yaml:"name"`
-	Command string   `yaml:"command"`
-	Args    []string `yaml:"args"`
-	Env     []string `yaml:"env,omitempty"`
+	Name    string   `yaml:"name" mapstructure:"name"`
+	Command string   `yaml:"command" mapstructure:"command"`
+	Args    []string `yaml:"args" mapstructure:"args"`
+	Env     []string `yaml:"env,omitempty" mapstructure:"env"`
 }
 
 // LlamaConfig holds llama.cpp server configuration
 type LlamaConfig struct {
-	ServerURL         string  `yaml:"server_url"`
-	ContextSize       int     `yaml:"context_size"`
-	HandoffThreshold  float64 `yaml:"handoff_threshold"`
-	Model             string  `yaml:"model"`
-	Temperature       float64 `yaml:"temperature"`
-	MaxTokens         int     `yaml:"max_tokens"`
+	ServerURL        string  `yaml:"server_url" mapstructure:"server_url"`
+	ContextSize      int     `yaml:"context_size" mapstructure:"context_size"`
+	HandoffThreshold float64 `yaml:"handoff_threshold" mapstructure:"handoff_threshold"`
+	Model            string  `yaml:"model" mapstructure:"model"`
+	Temperature      float64 `yaml:"temperature" mapstructure:"temperature"`
+	MaxTokens        int     `yaml:"max_tokens" mapstructure:"max_tokens"`
 }
 
 // GitConfig holds git operation configuration
 type GitConfig struct {
-	MergeTarget  string `yaml:"merge_target"`
-	BranchPrefix string `yaml:"branch_prefix"`
-	AutoPush     bool   `yaml:"auto_push"`
-	SignCommits  bool   `yaml:"sign_commits"`
+	MergeTarget  string `yaml:"merge_target" mapstructure:"merge_target"`
+	BranchPrefix string `yaml:"branch_prefix" mapstructure:"branch_prefix"`
+	AutoPush     bool   `yaml:"auto_push" mapstructure:"auto_push"`
+	SignCommits  bool   `yaml:"sign_commits" mapstructure:"sign_commits"`
 }
 
 // WorkerConfig holds worker pool configuration
 type WorkerConfig struct {
-	Count           int `yaml:"count"`
-	MaxHandoffs     int `yaml:"max_handoffs"`
-	IdleTimeoutSecs int `yaml:"idle_timeout_secs"`
+	Count           int `yaml:"count" mapstructure:"count"`
+	MaxHandoffs     int `yaml:"max_handoffs" mapstructure:"max_handoffs"`
+	IdleTimeoutSecs int `yaml:"idle_timeout_secs" mapstructure:"idle_timeout_secs"`
 }
 
 // PathsConfig holds directory paths
 type PathsConfig struct {
-	Requests   string `yaml:"requests"`
-	Tasks      string `yaml:"tasks"`
-	Workspaces string `yaml:"workspaces"`
-	Logs       string `yaml:"logs"`
+	Requests   string `yaml:"requests" mapstructure:"requests"`
+	Tasks      string `yaml:"tasks" mapstructure:"tasks"`
+	Workspaces string `yaml:"workspaces" mapstructure:"workspaces"`
+	Logs       string `yaml:"logs" mapstructure:"logs"`
 }
 
 // Config is the root configuration structure
 type Config struct {
-	Llama   LlamaConfig  `yaml:"llama"`
-	Git     GitConfig    `yaml:"git"`
-	Workers WorkerConfig `yaml:"workers"`
+	Llama   LlamaConfig  `yaml:"llama" mapstructure:"llama"`
+	Git     GitConfig    `yaml:"git" mapstructure:"git"`
+	Workers WorkerConfig `yaml:"workers" mapstructure:"workers"`
 	MCP     struct {
-		Servers []MCPServer `yaml:"servers"`
-	} `yaml:"mcp"`
-	Paths PathsConfig `yaml:"paths"`
+		Servers []MCPServer `yaml:"servers" mapstructure:"servers"`
+	} `yaml:"mcp" mapstructure:"mcp"`
+	Paths PathsConfig `yaml:"paths" mapstructure:"paths"`
 }
 
 // DefaultConfig returns configuration with sensible defaults
@@ -184,15 +184,15 @@ func DefaultConfig() *Config {
 
 // HandoffContext contains state passed between agent generations
 type HandoffContext struct {
-	TaskID          string    `yaml:"task_id"`
-	Generation      int       `yaml:"generation"`
-	TokensUsed      int       `yaml:"tokens_used"`
-	Summary         string    `yaml:"summary"`
-	NextSteps       []string  `yaml:"next_steps"`
-	KeyLearnings    []string  `yaml:"key_learnings"`
-	FilesModified   []string  `yaml:"files_modified"`
-	Blockers        []string  `yaml:"blockers,omitempty"`
-	Timestamp       time.Time `yaml:"timestamp"`
+	TaskID        string    `yaml:"task_id"`
+	Generation    int       `yaml:"generation"`
+	TokensUsed    int       `yaml:"tokens_used"`
+	Summary       string    `yaml:"summary"`
+	NextSteps     []string  `yaml:"next_steps"`
+	KeyLearnings  []string  `yaml:"key_learnings"`
+	FilesModified []string  `yaml:"files_modified"`
+	Blockers      []string  `yaml:"blockers,omitempty"`
+	Timestamp     time.Time `yaml:"timestamp"`
 }
 
 // AgentResponse represents structured output from an agent

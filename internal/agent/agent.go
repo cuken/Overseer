@@ -61,6 +61,12 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[Agent] Starting task %s (phase: %s, generation: %d)",
 		a.task.ID[:8], a.task.Phase, a.generation)
 
+	// Check if task is valid for agent execution
+	if !a.task.State.IsActive() || a.task.State == types.StateMerging {
+		log.Printf("[Agent] Task is in terminal/inactive state %s, skipping run", a.task.State)
+		return nil
+	}
+
 	// Initialize with system prompt
 	if err := a.initializeSession(); err != nil {
 		return fmt.Errorf("failed to initialize session: %w", err)
@@ -90,20 +96,46 @@ func (a *Agent) Run(ctx context.Context) error {
 		parsed, err := a.parseResponse(response)
 		if err != nil {
 			log.Printf("[Agent] Failed to parse response: %v", err)
+			// Return error feedback to agent
+			a.messages = append(a.messages, ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("System Error: %v", err),
+			})
 			continue
 		}
 
 		// Handle state changes
+		var stateFeedback string
 		if parsed.StateChange != nil {
 			if err := a.handleStateChange(parsed.StateChange); err != nil {
 				log.Printf("[Agent] State change failed: %v", err)
+				stateFeedback = fmt.Sprintf("State change failed: %v", err)
+			} else {
+				stateFeedback = fmt.Sprintf("State successfully changed to %s (Phase: %s)",
+					a.task.State, a.task.Phase)
 			}
 		}
 
 		// Execute tool calls
 		if len(parsed.ToolCalls) > 0 {
+			// If there was state feedback, add it as a user message first
+			if stateFeedback != "" {
+				a.messages = append(a.messages, ChatMessage{
+					Role:    "user",
+					Content: stateFeedback,
+				})
+			}
+
 			results := a.executeTools(ctx, parsed.ToolCalls)
 			a.addToolResults(results)
+		} else if stateFeedback != "" {
+			// If no tools but state changed (or failed), we must send feedback
+			// to acknowledge the action and prevent agent loop
+			a.messages = append(a.messages, ChatMessage{
+				Role:    "user",
+				Content: stateFeedback,
+			})
+			a.contextTracker.UpdateUsage(a.contextTracker.TokensUsed() + EstimateTokens(stateFeedback))
 		}
 
 		// Check for handoff signal
@@ -111,10 +143,24 @@ func (a *Agent) Run(ctx context.Context) error {
 			return a.performHandoff()
 		}
 
-		// Check if task is complete
-		if a.task.State == types.StateCompleted || a.task.State == types.StateMerging {
-			log.Printf("[Agent] Task reached terminal state: %s", a.task.State)
+		// Check if task is complete or inactive
+		if !a.task.State.IsActive() || a.task.State == types.StateMerging {
+			log.Printf("[Agent] Task reached terminal/inactive state: %s", a.task.State)
 			return nil
+		}
+
+		// If we are here, the loop is continuing.
+		// If the last message was from the assistant (meaning no tools were called and no state feedback was added),
+		// we MUST append a user message to maintain the User->Assistant turn structure required by thinking models.
+		// We also remind the agent to use tools or signal completion.
+		if len(a.messages) > 0 && a.messages[len(a.messages)-1].Role == "assistant" {
+			log.Printf("[Agent] Appending continuation prompt to maintain flow")
+			prompt := "Acknowledged. Please proceed with the next step, or signal completion (using the update_task_state tool) if the task is finished."
+			a.messages = append(a.messages, ChatMessage{
+				Role:    "user",
+				Content: prompt,
+			})
+			a.contextTracker.UpdateUsage(a.contextTracker.TokensUsed() + EstimateTokens(prompt))
 		}
 	}
 }
@@ -122,8 +168,8 @@ func (a *Agent) Run(ctx context.Context) error {
 func (a *Agent) initializeSession() error {
 	// Build system prompt
 	data := PromptData{
-		Task:         a.task,
-		WorkspaceDir: a.workspaceDir,
+		Task:          a.task,
+		WorkspaceDir:  a.workspaceDir,
 		ContextStatus: a.contextTracker.Status(),
 	}
 	if a.toolExecutor != nil {
@@ -187,7 +233,7 @@ func (a *Agent) getNextAction(ctx context.Context) (string, error) {
 	content := resp.Choices[0].Message.Content
 
 	// Update token tracking
-	a.contextTracker.AddTokens(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	a.contextTracker.UpdateUsage(resp.Usage.TotalTokens)
 
 	// Add assistant response to history
 	a.messages = append(a.messages, ChatMessage{
@@ -213,14 +259,35 @@ func (a *Agent) parseResponse(content string) (*types.AgentResponse, error) {
 	}
 
 	// Extract tool calls
-	toolCallsRe := regexp.MustCompile(`(?s)<tool_calls>\s*(\[.*?\])\s*</tool_calls>`)
+	toolCallsRe := regexp.MustCompile(`(?s)<tool_calls>(.*?)</tool_calls>`)
 	if match := toolCallsRe.FindStringSubmatch(content); len(match) > 1 {
-		var calls []types.ToolCall
-		if err := json.Unmarshal([]byte(match[1]), &calls); err != nil {
-			log.Printf("[Agent] Failed to parse tool calls: %v", err)
-		} else {
-			response.ToolCalls = calls
+		rawJSON := strings.TrimSpace(match[1])
+		// Sanitize JSON using regex to handle trailing commas
+		// Replaces ", }" with "}" and ", ]" with "]"
+		commaRe := regexp.MustCompile(`,\s*([}\]])`)
+		rawJSON = commaRe.ReplaceAllString(rawJSON, "$1")
+
+		// Attempt to fix missing array closure
+		trimmed := strings.TrimSpace(rawJSON)
+		if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
+			trimmed += "]"
 		}
+
+		// Attempt to fix missing object closure: [ { ... ] -> [ { ... } ]
+		// Ignore empty array "[]"
+		if strings.HasSuffix(trimmed, "]") && !strings.HasSuffix(trimmed, "}]") && trimmed != "[]" {
+			trimmed = trimmed[:len(trimmed)-1] + "}]"
+		}
+		rawJSON = trimmed
+
+		var calls []types.ToolCall
+		if err := json.Unmarshal([]byte(rawJSON), &calls); err != nil {
+			log.Printf("[Agent] Failed to parse tool calls: %v. Raw: %s", err, rawJSON)
+			return nil, fmt.Errorf("failed to parse tool calls JSON: %w. Raw content: %s", err, rawJSON)
+		}
+		response.ToolCalls = calls
+	} else if strings.Contains(content, "<tool_calls>") {
+		return nil, fmt.Errorf("detected <tool_calls> tag but failed to extract content. Please ensure JSON array is strictly inside tags.")
 	}
 
 	// Check for handoff signal
@@ -277,7 +344,7 @@ func (a *Agent) addToolResults(results []types.ToolResult) {
 		Content: prompt,
 	})
 
-	a.contextTracker.AddTokens(EstimateTokens(prompt), 0)
+	a.contextTracker.UpdateUsage(a.contextTracker.TokensUsed() + EstimateTokens(prompt))
 }
 
 func (a *Agent) handleStateChange(change *types.StateChange) error {

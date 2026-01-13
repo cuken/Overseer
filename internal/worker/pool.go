@@ -20,6 +20,12 @@ type Pool struct {
 	mcpClient  *mcp.Client
 	wg         sync.WaitGroup
 	cancel     context.CancelFunc
+	verbose    bool
+}
+
+// SetVerbose enables verbose logging
+func (p *Pool) SetVerbose(v bool) {
+	p.verbose = v
 }
 
 // NewPool creates a new worker pool
@@ -47,6 +53,7 @@ func (p *Pool) Start(ctx context.Context) {
 	p.workers = make([]*Worker, workerCount)
 	for i := 0; i < workerCount; i++ {
 		p.workers[i] = NewWorker(i, p.projectDir, p.cfg, p.store, p.queue, p.mcpClient)
+		p.workers[i].SetVerbose(p.verbose)
 		p.wg.Add(1)
 		go func(w *Worker) {
 			defer p.wg.Done()

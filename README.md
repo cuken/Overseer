@@ -132,16 +132,16 @@ mcp:
   servers:
     - name: filesystem
       command: "npx"
-      args: ["-y", "@anthropic/mcp-server-filesystem", "."]
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
     - name: shell
       command: "npx"
-      args: ["-y", "@anthropic/mcp-server-shell"]
+      args: ["-y", "@mako10k/mcp-shell-server"]
     - name: git
       command: "npx"
-      args: ["-y", "@anthropic/mcp-server-git"]
+      args: ["-y", "@modelcontextprotocol/server-git"]
     - name: fetch
       command: "npx"
-      args: ["-y", "@anthropic/mcp-server-fetch"]
+      args: ["-y", "@modelcontextprotocol/server-fetch"]
 
 paths:
   requests: ".overseer/requests"

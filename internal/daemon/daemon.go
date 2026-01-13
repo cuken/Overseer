@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cuken/overseer/internal/agent"
 	"github.com/cuken/overseer/internal/config"
 	"github.com/cuken/overseer/internal/mcp"
 	"github.com/cuken/overseer/internal/task"
@@ -26,6 +27,12 @@ type Daemon struct {
 	mcpClient  *mcp.Client
 	signals    *SignalHandler
 	pidFile    string
+	verbose    bool
+}
+
+// SetVerbose enables verbose logging
+func (d *Daemon) SetVerbose(v bool) {
+	d.verbose = v
 }
 
 // New creates a new daemon instance
@@ -77,6 +84,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 	log.Printf("[Daemon] Config: llama=%s, workers=%d",
 		d.cfg.Llama.ServerURL, d.cfg.Workers.Count)
 
+	// Check LLM server connection
+	log.Printf("[Daemon] Checking LLM server at %s...", d.cfg.Llama.ServerURL)
+	// Create a temporary client just for the health check
+	// We can't use the worker's client here since workers aren't started yet
+	healthClient := agent.NewLlamaClient(d.cfg.Llama)
+	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := healthClient.Health(healthCtx); err != nil {
+		log.Printf("[Daemon] WARNING: LLM server check failed: %v", err)
+		log.Printf("[Daemon] Ensure llama.cpp server is running and accessible at %s", d.cfg.Llama.ServerURL)
+	} else {
+		log.Printf("[Daemon] LLM server connected successfully")
+	}
+	cancel()
+
 	// Connect to MCP servers
 	log.Printf("[Daemon] Connecting to MCP servers...")
 	if err := d.mcpClient.Connect(ctx, d.cfg.MCP.Servers); err != nil {
@@ -97,6 +118,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.queue.LoadPending(); err != nil {
 		log.Printf("[Daemon] Warning: failed to load pending tasks: %v", err)
 	}
+
+	// Load existing active tasks (to resume them)
+	log.Printf("[Daemon] Resuming active tasks...")
+	activeTasks, err := d.store.ListActive()
+	if err != nil {
+		log.Printf("[Daemon] Warning: failed to load active tasks: %v", err)
+	} else {
+		for _, t := range activeTasks {
+			log.Printf("[Daemon] Resuming active task: %s", t.ID)
+			d.queue.Enqueue(t)
+		}
+	}
+
 	log.Printf("[Daemon] Queue has %d tasks", d.queue.Len())
 
 	// Start file watcher
@@ -106,6 +140,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Create and start worker pool
 	d.pool = worker.NewPool(d.projectDir, d.cfg, d.store, d.queue, d.mcpClient)
+	d.pool.SetVerbose(d.verbose)
 	d.pool.Start(ctx)
 	defer d.pool.Stop()
 
