@@ -1,0 +1,40 @@
+# Binaries (at root only)
+/overseer
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Overseer runtime files (don't commit these)
+.overseer/logs/
+.overseer/workspaces/
+.overseer/tasks/active/
+.overseer/tasks/pending/
+.overseer/tasks/completed/
+.overseer/tasks/review/
+.overseer/requests_processed/
+.overseer/daemon.pid
+
+# Keep config and requests dir structure
+!.overseer/config.yaml
+!.overseer/requests/.gitkeep

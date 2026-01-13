@@ -1,0 +1,44 @@
+git:
+    auto_push: true
+    branch_prefix: feature
+    merge_target: main
+    sign_commits: false
+llama:
+    context_size: 32768
+    handoff_threshold: 0.8
+    max_tokens: 4096
+    model: default
+    server_url: http://localhost:8080
+    temperature: 0.7
+mcp:
+    servers:
+        - args:
+            - -y
+            - '@anthropic/mcp-server-filesystem'
+            - .
+          command: npx
+          name: filesystem
+        - args:
+            - -y
+            - '@anthropic/mcp-server-shell'
+          command: npx
+          name: shell
+        - args:
+            - -y
+            - '@anthropic/mcp-server-git'
+          command: npx
+          name: git
+        - args:
+            - -y
+            - '@anthropic/mcp-server-fetch'
+          command: npx
+          name: fetch
+paths:
+    logs: .overseer/logs
+    requests: .overseer/requests
+    tasks: .overseer/tasks
+    workspaces: .overseer/workspaces
+workers:
+    count: 1
+    idle_timeout_secs: 300
+    max_handoffs: 10
