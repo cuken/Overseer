@@ -177,34 +177,17 @@ func (s *Store) Load(id string) (*types.Task, error) {
 
 // LoadByPrefix loads a task by ID prefix
 func (s *Store) LoadByPrefix(prefix string) (*types.Task, error) {
-	// inefficient but simple: list all and filter.
-	// Optimally, SQLite 'LIKE' query.
-	// But `GetTask` is by ID.
-	// Let's list all active/pending/etc which covers most.
-	// Actually, just query DB.
-
-	// Add ListByPrefix to SQLiteStore?
-	// For now, load all is safer if I don't want to change SQLiteStore struct in this file.
-	// But I defined SQLiteStore in internal/storage/sqlite.
-
 	ctx := context.Background()
-	all, err := s.db.ListAllTasks(ctx)
+	matches, err := s.db.GetTaskByPrefix(ctx, prefix)
 	if err != nil {
 		return nil, err
-	}
-
-	var matches []*types.Task
-	for _, t := range all {
-		if len(t.ID) >= len(prefix) && t.ID[:len(prefix)] == prefix {
-			matches = append(matches, t)
-		}
 	}
 
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("no task found with prefix: %s", prefix)
 	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("ambiguous prefix %s: matches %d tasks", prefix, len(matches))
+		return nil, fmt.Errorf("ambiguous prefix %s: multiple matches found", prefix)
 	}
 
 	return matches[0], nil
@@ -241,23 +224,7 @@ func (s *Store) ListAll() ([]*types.Task, error) {
 // ListActive returns all tasks that are currently being worked on
 func (s *Store) ListActive() ([]*types.Task, error) {
 	ctx := context.Background()
-	// In file store, "active" was a directory containing generic active states.
-	// In types.go: StatePlanning, StateImplementing, etc. are active.
-	// We need to query for all active states.
-
-	// Helper to fetch all and filter
-	all, err := s.db.ListAllTasks(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var active []*types.Task
-	for _, t := range all {
-		if t.State.IsActive() {
-			active = append(active, t)
-		}
-	}
-	return active, nil
+	return s.db.ListActiveTasks(ctx)
 }
 
 // ListPending returns all pending tasks

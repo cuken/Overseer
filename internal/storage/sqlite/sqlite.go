@@ -175,6 +175,48 @@ func (s *SQLiteStore) ListAllTasks(ctx context.Context) ([]*types.Task, error) {
 	return tasks, nil
 }
 
+func (s *SQLiteStore) GetTaskByPrefix(ctx context.Context, prefix string) ([]*types.Task, error) {
+	// Query with LIMIT 2 to detect ambiguity efficiently
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM tasks WHERE id LIKE ? || '%' LIMIT 2", prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []*types.Task
+	for rows.Next() {
+		t, err := s.scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
+func (s *SQLiteStore) ListActiveTasks(ctx context.Context) ([]*types.Task, error) {
+	// Query for states defined in types.TaskState.IsActive()
+	query := `
+		SELECT * FROM tasks 
+		WHERE state IN ('planning', 'implementing', 'testing', 'debugging', 'merging')
+	`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []*types.Task
+	for rows.Next() {
+		t, err := s.scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
 // Scannable interface to handle Row and Rows
 type scannable interface {
 	Scan(dest ...interface{}) error
