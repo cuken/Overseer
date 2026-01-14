@@ -17,13 +17,14 @@ type Debouncer struct {
 	message   string
 	autoPush  bool
 
-	mu     sync.Mutex
-	timer  *time.Timer
-	dirty  bool
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	log    *logger.Logger
+	mu       sync.Mutex
+	timer    *time.Timer
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	dirty    bool
+	flushing bool
+	log      *logger.Logger
 }
 
 // NewDebouncer creates a new git operation debouncer
@@ -60,16 +61,46 @@ func (d *Debouncer) MarkDirty(commitMessage string) {
 // Flush forces an immediate commit of pending changes
 func (d *Debouncer) Flush() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if !d.dirty {
+	if d.flushing {
+		d.mu.Unlock()
 		return nil
 	}
+
+	if !d.dirty {
+		d.mu.Unlock()
+		return nil
+	}
+
+	// Capture state and set flushing
+	d.flushing = true
+	d.wg.Add(1)
 
 	if d.timer != nil {
 		d.timer.Stop()
 		d.timer = nil
 	}
+
+	msg := d.message
+	if msg == "" {
+		msg = "Auto-save: Work in progress"
+	}
+
+	d.dirty = false
+	d.message = ""
+	d.mu.Unlock()
+
+	defer func() {
+		d.mu.Lock()
+		d.flushing = false
+		// If someone marked us dirty while we were flushing, we need to flush again.
+		if d.dirty && d.timer == nil {
+			d.timer = time.AfterFunc(d.interval, func() {
+				d.Flush()
+			})
+		}
+		d.mu.Unlock()
+		d.wg.Done()
+	}()
 
 	d.log.Debug("Flushing git changes for branch %s", d.branch)
 
@@ -89,7 +120,6 @@ func (d *Debouncer) Flush() error {
 	}
 
 	if !hasChanges {
-		d.dirty = false
 		return nil
 	}
 
@@ -99,15 +129,10 @@ func (d *Debouncer) Flush() error {
 	}
 
 	// Commit
-	msg := d.message
-	if msg == "" {
-		msg = "Auto-save: Work in progress"
-	}
 	if err := d.gitClient.Commit(msg); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Push if enabled
 	// Push if enabled
 	if d.autoPush && d.gitClient.HasRemote() {
 		if err := d.gitClient.Push(); err != nil {
@@ -118,8 +143,6 @@ func (d *Debouncer) Flush() error {
 		}
 	}
 
-	d.dirty = false
-	d.message = ""
 	d.log.Success("Debounced commit successful")
 	return nil
 }
@@ -127,5 +150,7 @@ func (d *Debouncer) Flush() error {
 // Stop stops the debouncer and performs a final flush
 func (d *Debouncer) Stop() error {
 	d.cancel()
-	return d.Flush()
+	err := d.Flush()
+	d.wg.Wait()
+	return err
 }
