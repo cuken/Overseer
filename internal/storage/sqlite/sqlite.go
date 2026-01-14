@@ -60,7 +60,9 @@ func (s *SQLiteStore) initSchema() error {
 		conflict_files TEXT,
 		parent_task_id TEXT,
 		content_hash TEXT,
-		gate TEXT
+		gate TEXT,
+		due_at DATETIME,
+		defer_until DATETIME
 	);
 	CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 	CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
@@ -101,13 +103,15 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, t *types.Task) error {
 	INSERT INTO tasks (
 		id, title, description, branch, state, phase, priority,
 		requires_approval, dependencies, merge_target, created_at,
-		updated_at, handoffs, conflict_files, parent_task_id, content_hash, gate
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		updated_at, handoffs, conflict_files, parent_task_id, content_hash, gate,
+		due_at, defer_until
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := s.db.ExecContext(ctx, query,
 		t.ID, t.Title, t.Description, t.Branch, t.State, t.Phase, t.Priority,
 		t.RequiresApproval, jsonString(t.Dependencies), t.MergeTarget, t.CreatedAt,
 		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID, t.ContentHash, jsonString(t.Gate),
+		t.DueAt, t.DeferUntil,
 	)
 	return err
 }
@@ -123,13 +127,15 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, t *types.Task) error {
 	UPDATE tasks SET
 		title=?, description=?, branch=?, state=?, phase=?, priority=?,
 		requires_approval=?, dependencies=?, merge_target=?, created_at=?,
-		updated_at=?, handoffs=?, conflict_files=?, parent_task_id=?, content_hash=?, gate=?
+		updated_at=?, handoffs=?, conflict_files=?, parent_task_id=?, content_hash=?, gate=?,
+		due_at=?, defer_until=?
 	WHERE id=?`
 
 	_, err := s.db.ExecContext(ctx, query,
 		t.Title, t.Description, t.Branch, t.State, t.Phase, t.Priority,
 		t.RequiresApproval, jsonString(t.Dependencies), t.MergeTarget, t.CreatedAt,
 		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID, t.ContentHash, jsonString(t.Gate),
+		t.DueAt, t.DeferUntil,
 		t.ID,
 	)
 	return err
@@ -233,6 +239,7 @@ func (s *SQLiteStore) scanTask(row scannable) (*types.Task, error) {
 		&t.ID, &t.Title, &t.Description, &t.Branch, &t.State, &t.Phase,
 		&t.Priority, &t.RequiresApproval, &deps, &t.MergeTarget,
 		&t.CreatedAt, &t.UpdatedAt, &t.Handoffs, &conflicts, &t.ParentTaskID, &hash, &gateJSON,
+		&t.DueAt, &t.DeferUntil,
 	)
 	if err != nil {
 		return nil, err

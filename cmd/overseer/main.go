@@ -166,6 +166,26 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("failed to read file: %w", err)
 		}
 
+		due, _ := cmd.Flags().GetString("due")
+		deferUntil, _ := cmd.Flags().GetString("defer")
+		priority, _ := cmd.Flags().GetInt("priority")
+
+		if due != "" || deferUntil != "" || priority != 0 {
+			var frontmatter strings.Builder
+			frontmatter.WriteString("---\n")
+			if due != "" {
+				frontmatter.WriteString(fmt.Sprintf("due: %s\n", due))
+			}
+			if deferUntil != "" {
+				frontmatter.WriteString(fmt.Sprintf("defer: %s\n", deferUntil))
+			}
+			if priority != 0 {
+				frontmatter.WriteString(fmt.Sprintf("priority: %d\n", priority))
+			}
+			frontmatter.WriteString("---\n\n")
+			content = append([]byte(frontmatter.String()), content...)
+		}
+
 		// Copy to requests directory with original filename
 		filename := filepath.Base(srcPath)
 		dstPath := filepath.Join(projectDir, cfg.Paths.Requests, filename)
@@ -271,10 +291,20 @@ var listCmd = &cobra.Command{
 		defer store.Close()
 
 		showCompleted, _ := cmd.Flags().GetBool("completed")
+		showOverdue, _ := cmd.Flags().GetBool("overdue")
+		showDeferred, _ := cmd.Flags().GetBool("deferred")
 
 		// List by category
 		if jsonOutput {
 			resp := ListResponse{}
+			if showOverdue {
+				resp.Overdue, _ = store.ListOverdue()
+				return printJSON(resp)
+			}
+			if showDeferred {
+				resp.Deferred, _ = store.ListDeferred()
+				return printJSON(resp)
+			}
 			if tasks, err := store.ListActive(); err == nil {
 				resp.Active = tasks
 			}
@@ -295,19 +325,41 @@ var listCmd = &cobra.Command{
 		categories := []struct {
 			name   string
 			loader func() ([]*types.Task, error)
-		}{
-			{"Active", store.ListActive},
-			{"Pending", store.ListPending},
-			{"Review", store.ListReview},
-		}
+		}{}
 
-		if showCompleted {
+		if showOverdue {
 			categories = append(categories, struct {
 				name   string
 				loader func() ([]*types.Task, error)
-			}{"Completed", func() ([]*types.Task, error) {
-				return store.ListByState(types.StateCompleted)
-			}})
+			}{"Overdue", store.ListOverdue})
+		} else if showDeferred {
+			categories = append(categories, struct {
+				name   string
+				loader func() ([]*types.Task, error)
+			}{"Deferred", store.ListDeferred})
+		} else {
+			categories = append(categories,
+				struct {
+					name   string
+					loader func() ([]*types.Task, error)
+				}{"Active", store.ListActive},
+				struct {
+					name   string
+					loader func() ([]*types.Task, error)
+				}{"Pending", store.ListPending},
+				struct {
+					name   string
+					loader func() ([]*types.Task, error)
+				}{"Review", store.ListReview},
+			)
+			if showCompleted {
+				categories = append(categories, struct {
+					name   string
+					loader func() ([]*types.Task, error)
+				}{"Completed", func() ([]*types.Task, error) {
+					return store.ListByState(types.StateCompleted)
+				}})
+			}
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -704,6 +756,12 @@ func init() {
 	cleanCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt (use with caution)")
 
 	listCmd.Flags().BoolP("completed", "c", false, "Include completed tasks")
+	listCmd.Flags().Bool("overdue", false, "Show overdue tasks only")
+	listCmd.Flags().Bool("deferred", false, "Show deferred tasks only")
+
+	addCmd.Flags().String("due", "", "Due date (e.g. '+2d', '2026-01-15')")
+	addCmd.Flags().String("defer", "", "Defer until (e.g. '+1d', 'tomorrow')")
+	addCmd.Flags().Int("priority", 0, "Task priority")
 
 	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
@@ -801,6 +859,12 @@ func printTaskDetails(t *types.Task) {
 	fmt.Printf("  Handoffs:    %d\n", t.Handoffs)
 	fmt.Printf("  Created:     %s\n", t.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Updated:     %s\n", t.UpdatedAt.Format("2006-01-02 15:04:05"))
+	if t.DueAt != nil {
+		fmt.Printf("  Due:         %s\n", t.DueAt.Format("2006-01-02 15:04:05"))
+	}
+	if t.DeferUntil != nil {
+		fmt.Printf("  Deferred:    until %s\n", t.DeferUntil.Format("2006-01-02 15:04:05"))
+	}
 	if t.RequiresApproval {
 		fmt.Printf("  Approval:    REQUIRED\n")
 	}

@@ -30,23 +30,25 @@ const (
 
 // Task represents a unit of work to be completed by agents
 type Task struct {
-	ID               string    `yaml:"id" json:"id"`
-	Title            string    `yaml:"title" json:"title"`
-	Description      string    `yaml:"description" json:"description"`
-	Branch           string    `yaml:"branch" json:"branch"`
-	State            TaskState `yaml:"state" json:"state"`
-	Phase            TaskPhase `yaml:"phase" json:"phase"`
-	Priority         int       `yaml:"priority" json:"priority"`
-	RequiresApproval bool      `yaml:"requires_approval" json:"requires_approval"`
-	Dependencies     []string  `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
-	MergeTarget      string    `yaml:"merge_target" json:"merge_target"`
-	CreatedAt        time.Time `yaml:"created_at" json:"created_at"`
-	UpdatedAt        time.Time `yaml:"updated_at" json:"updated_at"`
-	Handoffs         int       `yaml:"handoffs" json:"handoffs"`
-	ConflictFiles    []string  `yaml:"conflict_files,omitempty" json:"conflict_files,omitempty"`
-	ParentTaskID     string    `yaml:"parent_task_id,omitempty" json:"parent_task_id,omitempty"`
-	ContentHash      string    `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
-	Gate             *Gate     `yaml:"gate,omitempty" json:"gate,omitempty"`
+	ID               string     `yaml:"id" json:"id"`
+	Title            string     `yaml:"title" json:"title"`
+	Description      string     `yaml:"description" json:"description"`
+	Branch           string     `yaml:"branch" json:"branch"`
+	State            TaskState  `yaml:"state" json:"state"`
+	Phase            TaskPhase  `yaml:"phase" json:"phase"`
+	Priority         int        `yaml:"priority" json:"priority"`
+	RequiresApproval bool       `yaml:"requires_approval" json:"requires_approval"`
+	Dependencies     []string   `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
+	MergeTarget      string     `yaml:"merge_target" json:"merge_target"`
+	CreatedAt        time.Time  `yaml:"created_at" json:"created_at"`
+	UpdatedAt        time.Time  `yaml:"updated_at" json:"updated_at"`
+	Handoffs         int        `yaml:"handoffs" json:"handoffs"`
+	ConflictFiles    []string   `yaml:"conflict_files,omitempty" json:"conflict_files,omitempty"`
+	ParentTaskID     string     `yaml:"parent_task_id,omitempty" json:"parent_task_id,omitempty"`
+	ContentHash      string     `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
+	Gate             *Gate      `yaml:"gate,omitempty" json:"gate,omitempty"`
+	DueAt            *time.Time `yaml:"due_at,omitempty" json:"due_at,omitempty"`
+	DeferUntil       *time.Time `yaml:"defer_until,omitempty" json:"defer_until,omitempty"`
 }
 
 // IsActive returns true if the task is actively being worked on

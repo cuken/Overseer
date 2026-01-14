@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/cuken/overseer/internal/logger"
 	"github.com/cuken/overseer/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -27,6 +27,7 @@ type Agent struct {
 	messages       []ChatMessage
 	toolExecutor   ToolExecutor
 	generation     int
+	log            *logger.Logger
 }
 
 // ToolExecutor is an interface for executing tool calls
@@ -36,9 +37,12 @@ type ToolExecutor interface {
 }
 
 // NewAgent creates a new agent for a task
-func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, projectDir, sourceDir string) *Agent {
+func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, projectDir, sourceDir, logsDir string) *Agent {
 	workspaceDir := filepath.Join(projectDir, ".overseer", "workspaces", task.ID)
 	os.MkdirAll(workspaceDir, 0755)
+
+	// Create a task-specific logger
+	log := logger.New(fmt.Sprintf("Agent-%s", task.ID[:8]), logsDir)
 
 	return &Agent{
 		task:           task,
@@ -50,6 +54,7 @@ func NewAgent(task *types.Task, llama *LlamaClient, cfg types.LlamaConfig, proje
 		sourceDir:      sourceDir,
 		messages:       make([]ChatMessage, 0),
 		generation:     0,
+		log:            log,
 	}
 }
 
@@ -58,14 +63,21 @@ func (a *Agent) SetToolExecutor(executor ToolExecutor) {
 	a.toolExecutor = executor
 }
 
+// SetVerbose enables verbose logging for the agent
+func (a *Agent) SetVerbose(v bool) {
+	if a.log != nil {
+		a.log.SetVerbose(v)
+	}
+}
+
 // Run executes the agent loop until handoff or completion
 func (a *Agent) Run(ctx context.Context) error {
-	log.Printf("[Agent] Starting task %s (phase: %s, generation: %d)",
+	a.log.Info("Starting task %s (phase: %s, generation: %d)",
 		a.task.ID[:8], a.task.Phase, a.generation)
 
 	// Check if task is valid for agent execution
 	if !a.task.State.IsActive() || a.task.State == types.StateMerging {
-		log.Printf("[Agent] Task is in terminal/inactive state %s, skipping run", a.task.State)
+		a.log.Info("Task is in terminal/inactive state %s, skipping run", a.task.State)
 		return nil
 	}
 
@@ -84,7 +96,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		// Check if handoff is needed before making request
 		if a.contextTracker.NeedsHandoff() {
-			log.Printf("[Agent] Context threshold reached, initiating handoff")
+			a.log.Info("Context threshold reached, initiating handoff")
 			return a.performHandoff()
 		}
 
@@ -97,7 +109,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// Parse and execute response
 		parsed, err := a.parseResponse(response)
 		if err != nil {
-			log.Printf("[Agent] Failed to parse response: %v", err)
+			a.log.Error("Failed to parse response: %v", err)
 			// Return error feedback to agent
 			a.messages = append(a.messages, ChatMessage{
 				Role:    "user",
@@ -110,9 +122,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		var stateFeedback string
 		if parsed.StateChange != nil {
 			if err := a.handleStateChange(parsed.StateChange); err != nil {
-				log.Printf("[Agent] State change failed: %v", err)
+				a.log.Warn("State change failed: %v", err)
 				stateFeedback = fmt.Sprintf("State change failed: %v", err)
 			} else {
+				a.log.Info("State successfully changed to %s (Phase: %s)",
+					a.task.State, a.task.Phase)
 				stateFeedback = fmt.Sprintf("State successfully changed to %s (Phase: %s)",
 					a.task.State, a.task.Phase)
 			}
@@ -147,7 +161,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 		// Check if task is complete or inactive
 		if !a.task.State.IsActive() || a.task.State == types.StateMerging {
-			log.Printf("[Agent] Task reached terminal/inactive state: %s", a.task.State)
+			a.log.Info("Task reached terminal/inactive state: %s", a.task.State)
 			return nil
 		}
 
@@ -156,7 +170,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		// we MUST append a user message to maintain the User->Assistant turn structure required by thinking models.
 		// We also remind the agent to use tools or signal completion.
 		if len(a.messages) > 0 && a.messages[len(a.messages)-1].Role == "assistant" {
-			log.Printf("[Agent] Appending continuation prompt to maintain flow")
+			a.log.Debug("Appending continuation prompt to maintain flow")
 			prompt := "Acknowledged. Please proceed with the next step, or signal completion (using the update_task_state tool) if the task is finished."
 			a.messages = append(a.messages, ChatMessage{
 				Role:    "user",
@@ -245,7 +259,7 @@ func (a *Agent) getNextAction(ctx context.Context) (string, error) {
 		Content: content,
 	})
 
-	log.Printf("[Agent] Response received (tokens: %d/%d, %.1f%%)",
+	a.log.Debug("Response received (tokens: %d/%d, %.1f%%)",
 		a.contextTracker.TokensUsed(),
 		a.contextTracker.contextSize,
 		a.contextTracker.UsageRatio()*100)
@@ -260,33 +274,21 @@ func (a *Agent) parseResponse(content string) (*types.AgentResponse, error) {
 	thinkingRe := regexp.MustCompile(`(?s)<thinking>(.*?)</thinking>`)
 	if match := thinkingRe.FindStringSubmatch(content); len(match) > 1 {
 		response.Thinking = strings.TrimSpace(match[1])
+		// Log thinking if verbose
+		a.log.LogAgentThinking(response.Thinking)
 	}
 
 	// Extract tool calls
 	toolCallsRe := regexp.MustCompile(`(?s)<tool_calls>(.*?)</tool_calls>`)
 	if match := toolCallsRe.FindStringSubmatch(content); len(match) > 1 {
 		rawJSON := strings.TrimSpace(match[1])
-		// Sanitize JSON using regex to handle trailing commas
-		// Replaces ", }" with "}" and ", ]" with "]"
-		commaRe := regexp.MustCompile(`,\s*([}\]])`)
-		rawJSON = commaRe.ReplaceAllString(rawJSON, "$1")
 
-		// Attempt to fix missing array closure
-		trimmed := strings.TrimSpace(rawJSON)
-		if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
-			trimmed += "]"
-		}
-
-		// Attempt to fix missing object closure: [ { ... ] -> [ { ... } ]
-		// Ignore empty array "[]"
-		if strings.HasSuffix(trimmed, "]") && !strings.HasSuffix(trimmed, "}]") && trimmed != "[]" {
-			trimmed = trimmed[:len(trimmed)-1] + "}]"
-		}
-		rawJSON = trimmed
+		// Sanitize the JSON to fix common issues
+		rawJSON = sanitizeJSON(rawJSON)
 
 		var calls []types.ToolCall
 		if err := json.Unmarshal([]byte(rawJSON), &calls); err != nil {
-			log.Printf("[Agent] Failed to parse tool calls: %v. Raw: %s", err, rawJSON)
+			a.log.Error("Failed to parse tool calls: %v. Raw: %s", err, rawJSON)
 			return nil, fmt.Errorf("failed to parse tool calls JSON: %w. Raw content: %s", err, rawJSON)
 		}
 		response.ToolCalls = calls
@@ -311,7 +313,103 @@ func (a *Agent) parseResponse(content string) (*types.AgentResponse, error) {
 	// Non-structured content is the message
 	response.Message = content
 
+	// Log the message (excluding thinking and tool calls)
+	// Extract plain message text by removing XML tags
+	plainMessage := content
+	plainMessage = thinkingRe.ReplaceAllString(plainMessage, "")
+	plainMessage = toolCallsRe.ReplaceAllString(plainMessage, "")
+	plainMessage = stateRe.ReplaceAllString(plainMessage, "")
+	plainMessage = strings.TrimSpace(plainMessage)
+	if plainMessage != "" && !strings.Contains(plainMessage, "<handoff>") {
+		a.log.LogAgentMessage(plainMessage)
+	}
+
 	return response, nil
+}
+
+// sanitizeJSON attempts to fix common JSON formatting issues from LLM output
+func sanitizeJSON(rawJSON string) string {
+	// Remove trailing commas before closing brackets
+	commaRe := regexp.MustCompile(`,\s*([}\]])`)
+	rawJSON = commaRe.ReplaceAllString(rawJSON, "$1")
+
+	// Attempt to fix missing array closure
+	trimmed := strings.TrimSpace(rawJSON)
+	if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
+		trimmed += "]"
+	}
+
+	// Attempt to fix missing object closure: [ { ... ] -> [ { ... } ]
+	// Ignore empty array "[]"
+	if strings.HasSuffix(trimmed, "]") && !strings.HasSuffix(trimmed, "}]") && trimmed != "[]" {
+		trimmed = trimmed[:len(trimmed)-1] + "}]"
+	}
+
+	// Try to parse - if it works, we're done
+	var test interface{}
+	if json.Unmarshal([]byte(trimmed), &test) == nil {
+		return trimmed
+	}
+
+	// If parsing failed, it might be due to unescaped control characters
+	// Escape literal control characters that appear in string values
+	// This is a best-effort approach - we look for strings and escape control chars
+	result := escapeControlCharsInJSON(trimmed)
+
+	return result
+}
+
+// escapeControlCharsInJSON escapes literal control characters in JSON strings
+func escapeControlCharsInJSON(s string) string {
+	var result strings.Builder
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if escaped {
+			// If the previous character was a backslash, this is part of an escape sequence
+			result.WriteByte(ch)
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			result.WriteByte(ch)
+			escaped = true
+			continue
+		}
+
+		if ch == '"' {
+			// Toggle string state (unless it's escaped, but we already handled that)
+			inString = !inString
+			result.WriteByte(ch)
+			continue
+		}
+
+		if inString {
+			// We're inside a string - escape control characters
+			switch ch {
+			case '\t':
+				result.WriteString("\\t")
+			case '\n':
+				result.WriteString("\\n")
+			case '\r':
+				result.WriteString("\\r")
+			case '\b':
+				result.WriteString("\\b")
+			case '\f':
+				result.WriteString("\\f")
+			default:
+				result.WriteByte(ch)
+			}
+		} else {
+			result.WriteByte(ch)
+		}
+	}
+
+	return result.String()
 }
 
 func (a *Agent) executeTools(ctx context.Context, calls []types.ToolCall) []types.ToolResult {
@@ -329,7 +427,7 @@ func (a *Agent) executeTools(ctx context.Context, calls []types.ToolCall) []type
 
 	var results []types.ToolResult
 	for _, call := range calls {
-		log.Printf("[Agent] Executing tool: %s", call.Name)
+		a.log.Info("Executing tool: %s", call.Name)
 		result := a.toolExecutor.Execute(ctx, call)
 		results = append(results, result)
 	}
@@ -339,7 +437,7 @@ func (a *Agent) executeTools(ctx context.Context, calls []types.ToolCall) []type
 func (a *Agent) addToolResults(results []types.ToolResult) {
 	prompt, err := a.promptBuilder.BuildToolResultPrompt(results)
 	if err != nil {
-		log.Printf("[Agent] Failed to build tool result prompt: %v", err)
+		a.log.Error("Failed to build tool result prompt: %v", err)
 		return
 	}
 
@@ -352,7 +450,7 @@ func (a *Agent) addToolResults(results []types.ToolResult) {
 }
 
 func (a *Agent) handleStateChange(change *types.StateChange) error {
-	log.Printf("[Agent] State change requested: %s -> %s (%s)",
+	a.log.Info("State change requested: %s -> %s (%s)",
 		a.task.State, change.NewState, change.Reason)
 
 	if change.NewPhase != "" {
@@ -370,7 +468,7 @@ func (a *Agent) handleStateChange(change *types.StateChange) error {
 }
 
 func (a *Agent) performHandoff() error {
-	log.Printf("[Agent] Performing handoff for task %s", a.task.ID[:8])
+	a.log.Info("Performing handoff for task %s", a.task.ID[:8])
 
 	// Create handoff context
 	handoff := &types.HandoffContext{
@@ -414,14 +512,14 @@ blockers:
 
 	resp, err := a.llama.Chat(ctx, a.messages)
 	if err != nil {
-		log.Printf("[Agent] Failed to get handoff summary: %v", err)
+		a.log.Warn("Failed to get handoff summary: %v", err)
 	} else if len(resp.Choices) > 0 {
 		a.parseHandoffSummary(resp.Choices[0].Message.Content, handoff)
 	}
 
 	// Save handoff
 	if err := a.saveHandoff(handoff); err != nil {
-		log.Printf("[Agent] Failed to save handoff: %v", err)
+		a.log.Warn("Failed to save handoff: %v", err)
 	}
 
 	// Increment task handoff counter

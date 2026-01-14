@@ -259,9 +259,58 @@ func (s *Store) ListActive() ([]*types.Task, error) {
 	return s.db.ListActiveTasks(ctx)
 }
 
-// ListPending returns all pending tasks
+// ListPending returns all pending tasks that are ready for execution (not deferred)
 func (s *Store) ListPending() ([]*types.Task, error) {
-	return s.ListByState(types.StatePending)
+	all, err := s.ListByState(types.StatePending)
+	if err != nil {
+		return nil, err
+	}
+
+	var ready []*types.Task
+	now := time.Now()
+	for _, t := range all {
+		if t.DeferUntil == nil || now.After(*t.DeferUntil) {
+			ready = append(ready, t)
+		}
+	}
+	return ready, nil
+}
+
+// ListOverdue returns all active/pending tasks that are past their due date
+func (s *Store) ListOverdue() ([]*types.Task, error) {
+	all, err := s.ListAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var overdue []*types.Task
+	now := time.Now()
+	for _, t := range all {
+		if t.State == types.StateCompleted || t.State == types.StateBlocked {
+			continue
+		}
+		if t.DueAt != nil && now.After(*t.DueAt) {
+			overdue = append(overdue, t)
+		}
+	}
+	return overdue, nil
+}
+
+// ListDeferred returns all tasks currently hidden until a later time
+func (s *Store) ListDeferred() ([]*types.Task, error) {
+	all, err := s.ListAll()
+	if err != nil {
+		return nil, err
+	}
+
+	var deferred []*types.Task
+	now := time.Now()
+	for _, t := range all {
+		if t.DeferUntil != nil && now.Before(*t.DeferUntil) {
+			deferred = append(deferred, t)
+		}
+	}
+	return deferred, nil
 }
 
 // ListReview returns all tasks awaiting human review

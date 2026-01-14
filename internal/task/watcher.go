@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -127,12 +128,30 @@ func (w *Watcher) processFile(path string) {
 		return
 	}
 
-	title, description := ParseRequestFile(string(content))
-	if title == "" {
-		title = strings.TrimSuffix(filepath.Base(path), ".md")
+	req := ParseRequestFile(string(content))
+	if req.Title == "" {
+		req.Title = strings.TrimSuffix(filepath.Base(path), ".md")
 	}
 
-	task := NewTask(title, description)
+	task := NewTask(req.Title, req.Description)
+
+	// Apply metadata
+	if dueStr, ok := req.Metadata["due"]; ok {
+		if t, err := ParseRelativeDate(dueStr); err == nil {
+			task.DueAt = &t
+		}
+	}
+	if deferStr, ok := req.Metadata["defer"]; ok {
+		if t, err := ParseRelativeDate(deferStr); err == nil {
+			task.DeferUntil = &t
+		}
+	}
+	if priorityStr, ok := req.Metadata["priority"]; ok {
+		var p int
+		if _, err := fmt.Sscanf(priorityStr, "%d", &p); err == nil {
+			task.Priority = p
+		}
+	}
 
 	// Save to pending
 	if err := w.store.Save(task); err != nil {

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/cuken/overseer/internal/logger"
 	"github.com/cuken/overseer/pkg/types"
 )
 
@@ -22,15 +22,21 @@ type LlamaClient struct {
 	temperature float64
 	client      *http.Client
 	debug       bool
+	log         *logger.Logger
 }
 
 // SetDebug enables debug logging
 func (c *LlamaClient) SetDebug(debug bool) {
 	c.debug = debug
+	if c.log != nil {
+		c.log.SetVerbose(debug)
+	}
 }
 
 // NewLlamaClient creates a new llama.cpp client
 func NewLlamaClient(cfg types.LlamaConfig) *LlamaClient {
+	// Create a logger but don't write to file since this is shared
+	log := logger.New("Llama", "")
 	return &LlamaClient{
 		serverURL:   cfg.ServerURL,
 		model:       cfg.Model,
@@ -39,6 +45,7 @@ func NewLlamaClient(cfg types.LlamaConfig) *LlamaClient {
 		client: &http.Client{
 			Timeout: 10 * time.Minute, // Long timeout for generation
 		},
+		log: log,
 	}
 }
 
@@ -107,7 +114,7 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 		// specific check: if it's the last message and it's an assistant message, skip it
 		// to avoid "Assistant response prefill is incompatible with enable_thinking" error
 		if i == lastIdx && msg.Role == "assistant" {
-			log.Printf("[Llama] Dropping trailing assistant message (prefill) for compatibility")
+			c.log.Debug("Dropping trailing assistant message (prefill) for compatibility")
 			continue
 		}
 		sanitizedMessages = append(sanitizedMessages, msg)
@@ -127,7 +134,7 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 	}
 
 	if c.debug {
-		log.Printf("[Llama] Request: %s", string(body))
+		c.log.Debug("Chat request: %d messages", len(sanitizedMessages))
 	}
 
 	baseURL := strings.TrimSuffix(c.serverURL, "/")
@@ -148,7 +155,7 @@ func (c *LlamaClient) Chat(ctx context.Context, messages []ChatMessage) (*ChatRe
 
 	if c.debug {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		log.Printf("[Llama] Response: %s", string(bodyBytes))
+		c.log.Debug("Response status: %d", resp.StatusCode)
 		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 

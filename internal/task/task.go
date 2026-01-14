@@ -116,32 +116,107 @@ func slugify(title string) string {
 	return slug
 }
 
-// ParseRequestFile extracts title and description from a markdown request file
-func ParseRequestFile(content string) (title, description string) {
-	lines := strings.Split(content, "\n")
+// TaskRequest represents the parsed contents of a request file
+type TaskRequest struct {
+	Title       string
+	Description string
+	Metadata    map[string]string
+}
 
+// ParseRequestFile extracts title, description and metadata from a markdown request file
+func ParseRequestFile(content string) *TaskRequest {
+	req := &TaskRequest{
+		Metadata: make(map[string]string),
+	}
+
+	lines := strings.Split(content, "\n")
+	startLine := 0
+
+	// Check for YAML frontmatter
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			line := strings.TrimSpace(lines[i])
+			if line == "---" {
+				startLine = i + 1
+				break
+			}
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				key := strings.ToLower(strings.TrimSpace(parts[0]))
+				val := strings.TrimSpace(parts[1])
+				req.Metadata[key] = val
+			}
+		}
+	}
+
+	trimmedLines := lines[startLine:]
 	// Look for a markdown header as title
-	for i, line := range lines {
+	for i, line := range trimmedLines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "# ") {
-			title = strings.TrimPrefix(line, "# ")
+			req.Title = strings.TrimPrefix(line, "# ")
 			// Rest is description
-			if i+1 < len(lines) {
-				description = strings.TrimSpace(strings.Join(lines[i+1:], "\n"))
+			if i+1 < len(trimmedLines) {
+				req.Description = strings.TrimSpace(strings.Join(trimmedLines[i+1:], "\n"))
 			}
-			return
+			return req
 		}
 	}
 
-	// No header found, use first line as title
-	if len(lines) > 0 {
-		title = strings.TrimSpace(lines[0])
-		if len(lines) > 1 {
-			description = strings.TrimSpace(strings.Join(lines[1:], "\n"))
+	// No header found, use first non-empty line as title
+	for i, line := range trimmedLines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			req.Title = line
+			if i+1 < len(trimmedLines) {
+				req.Description = strings.TrimSpace(strings.Join(trimmedLines[i+1:], "\n"))
+			}
+			break
 		}
 	}
 
-	return
+	return req
+}
+
+// ParseRelativeDate parses a date string like "+2d", "2026-01-15T12:00:00Z", or "+5h"
+func ParseRelativeDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date string")
+	}
+
+	if strings.HasPrefix(s, "+") {
+		durationStr := s[1:]
+		// Handle days suffix 'd' which is not supported by time.ParseDuration
+		if strings.HasSuffix(durationStr, "d") {
+			daysStr := strings.TrimSuffix(durationStr, "d")
+			var days int
+			if _, err := fmt.Sscanf(daysStr, "%d", &days); err == nil {
+				return time.Now().Add(time.Duration(days) * 24 * time.Hour), nil
+			}
+		}
+
+		dur, err := time.ParseDuration(durationStr)
+		if err == nil {
+			return time.Now().Add(dur), nil
+		}
+	}
+
+	// Try common layouts
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+	}
+
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("invalid date format: %s", s)
 }
 
 // Summary returns a brief summary of the task

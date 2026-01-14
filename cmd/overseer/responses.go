@@ -24,6 +24,8 @@ type ListResponse struct {
 	Pending   []*types.Task `json:"pending,omitempty"`
 	Review    []*types.Task `json:"review,omitempty"`
 	Completed []*types.Task `json:"completed,omitempty"`
+	Overdue   []*types.Task `json:"overdue,omitempty"`
+	Deferred  []*types.Task `json:"deferred,omitempty"`
 }
 
 type ApproveResponse struct {
