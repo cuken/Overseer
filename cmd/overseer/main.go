@@ -106,6 +106,15 @@ var initCmd = &cobra.Command{
 			}
 		}
 
+		// Update .gitignore to exclude overseer runtime files
+		if err := config.EnsureGitignore(cwd); err != nil {
+			if !jsonOutput {
+				fmt.Printf("Warning: failed to update .gitignore: %v\n", err)
+			}
+		} else if !jsonOutput {
+			fmt.Println("Updated .gitignore with overseer exclusions")
+		}
+
 		if jsonOutput {
 			resp := InitResponse{
 				Message: fmt.Sprintf("Initialized overseer in %s", cwd),

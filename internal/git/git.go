@@ -146,9 +146,28 @@ func (g *Git) Stash() error {
 	return err
 }
 
+// StashIncludeUntracked stashes changes including untracked files
+func (g *Git) StashIncludeUntracked() error {
+	_, err := g.run("stash", "--include-untracked")
+	return err
+}
+
 // StashPop pops the last stash
 func (g *Git) StashPop() error {
 	_, err := g.run("stash", "pop")
+	return err
+}
+
+// HasStash checks if there are any stashed changes
+func (g *Git) HasStash() bool {
+	out, err := g.run("stash", "list")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// CleanUntrackedOverseer removes untracked .overseer runtime files that shouldn't be tracked
+func (g *Git) CleanUntrackedOverseer() error {
+	// Only clean specific patterns that are definitely runtime files
+	_, err := g.run("clean", "-f", ".overseer/tasks/*.db-shm", ".overseer/tasks/*.db-wal")
 	return err
 }
 

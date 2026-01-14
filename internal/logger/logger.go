@@ -258,10 +258,16 @@ func (l *Logger) LogAgentMessage(message string) {
 
 // LogError logs an error with full details to both console and error log file
 func (l *Logger) LogError(err error, context string) {
+	if err == nil {
+		l.Error("%s: <nil error>", context)
+		return
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	errMsg := err.Error()
 
 	// Console output
 	if !l.noColor {
@@ -269,23 +275,23 @@ func (l *Logger) LogError(err error, context string) {
 			Gray, timestamp, Reset,
 			Red+Bold, l.component, Reset,
 			context,
-			Red, err.Error(), Reset)
+			Red, errMsg, Reset)
 	} else {
 		fmt.Fprintf(os.Stderr, "[%s] [%s ERROR] %s: %s\n",
-			timestamp, l.component, context, err.Error())
+			timestamp, l.component, context, errMsg)
 	}
 
 	// Write to component log file
 	if l.logFile != nil {
-		l.logFile.WriteString(fmt.Sprintf("[%s] [ERROR] %s: %s\n", timestamp, context, err.Error()))
+		l.logFile.WriteString(fmt.Sprintf("[%s] [ERROR] %s: %s\n", timestamp, context, errMsg))
 	}
 
 	// Also write to errors.log
 	if l.logDir != "" {
 		errorLogPath := filepath.Join(l.logDir, "errors.log")
-		if f, err := os.OpenFile(errorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		if f, openErr := os.OpenFile(errorLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); openErr == nil {
 			defer f.Close()
-			f.WriteString(fmt.Sprintf("[%s] [%s] %s: %s\n", timestamp, l.component, context, err.Error()))
+			f.WriteString(fmt.Sprintf("[%s] [%s] %s: %s\n", timestamp, l.component, context, errMsg))
 		}
 	}
 }

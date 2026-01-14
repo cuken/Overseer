@@ -26,9 +26,27 @@ func NewBranchManager(git *Git, cfg types.GitConfig) *BranchManager {
 
 // CreateTaskBranch creates a new branch for a task
 func (b *BranchManager) CreateTaskBranch(task *types.Task) error {
+	// Check for uncommitted changes before checkout
+	hasChanges, _ := b.git.HasChanges()
+	stashed := false
+
+	if hasChanges {
+		// Stash changes including untracked files (like SQLite WAL files)
+		if err := b.git.StashIncludeUntracked(); err != nil {
+			// If stash fails, try cleaning just the overseer runtime files
+			b.git.CleanUntrackedOverseer()
+		} else {
+			stashed = true
+		}
+	}
+
 	// Ensure we're on the merge target first
 	if err := b.git.Checkout(b.mergeTarget); err != nil {
-		return fmt.Errorf("failed to checkout %s: %w", b.mergeTarget, err)
+		// If checkout still fails, try harder
+		b.git.CleanUntrackedOverseer()
+		if err := b.git.Checkout(b.mergeTarget); err != nil {
+			return fmt.Errorf("failed to checkout %s: %w", b.mergeTarget, err)
+		}
 	}
 
 	// Pull latest changes
@@ -47,6 +65,11 @@ func (b *BranchManager) CreateTaskBranch(task *types.Task) error {
 	// Update task with branch name
 	task.Branch = branchName
 
+	// Pop stash on the new branch if we stashed
+	if stashed && b.git.HasStash() {
+		b.git.StashPop() // Ignore error - stash might not apply cleanly
+	}
+
 	return nil
 }
 
@@ -60,7 +83,16 @@ func (b *BranchManager) SwitchToTaskBranch(task *types.Task) error {
 		return fmt.Errorf("branch %s does not exist", task.Branch)
 	}
 
-	return b.git.Checkout(task.Branch)
+	// Try checkout first
+	if err := b.git.Checkout(task.Branch); err != nil {
+		// If checkout fails due to dirty state, clean overseer runtime files and retry
+		b.git.CleanUntrackedOverseer()
+		if err := b.git.Checkout(task.Branch); err != nil {
+			return fmt.Errorf("failed to checkout %s: %w", task.Branch, err)
+		}
+	}
+
+	return nil
 }
 
 // CommitTaskProgress commits current changes with a task-related message

@@ -141,6 +141,87 @@ func EnsureDirectories(projectDir string, cfg *types.Config) error {
 	return nil
 }
 
+// EnsureGitignore adds necessary entries to .gitignore for overseer
+func EnsureGitignore(projectDir string) error {
+	gitignorePath := filepath.Join(projectDir, ".gitignore")
+
+	// Entries that should be in .gitignore
+	entries := []string{
+		"# Overseer - autonomous agent orchestration",
+		".overseer/tasks/*.db-shm",
+		".overseer/tasks/*.db-wal",
+		".overseer/logs/",
+		".overseer/workspaces/",
+	}
+
+	// Read existing .gitignore
+	existing := ""
+	if data, err := os.ReadFile(gitignorePath); err == nil {
+		existing = string(data)
+	}
+
+	// Check which entries are missing
+	var toAdd []string
+	for _, entry := range entries {
+		if !containsLine(existing, entry) {
+			toAdd = append(toAdd, entry)
+		}
+	}
+
+	if len(toAdd) == 0 {
+		return nil // All entries already present
+	}
+
+	// Append missing entries
+	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open .gitignore: %w", err)
+	}
+	defer f.Close()
+
+	// Add newline if file doesn't end with one
+	if existing != "" && !endsWithNewline(existing) {
+		f.WriteString("\n")
+	}
+
+	for _, entry := range toAdd {
+		f.WriteString(entry + "\n")
+	}
+
+	return nil
+}
+
+// containsLine checks if a string contains a specific line
+func containsLine(content, line string) bool {
+	for _, l := range splitLines(content) {
+		if l == line {
+			return true
+		}
+	}
+	return false
+}
+
+// splitLines splits content by newlines
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
+}
+
+// endsWithNewline checks if string ends with newline
+func endsWithNewline(s string) bool {
+	return len(s) > 0 && s[len(s)-1] == '\n'
+}
+
 // GetProjectDir finds the project root by looking for .overseer or .git
 func GetProjectDir() (string, error) {
 	cwd, err := os.Getwd()
