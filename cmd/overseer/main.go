@@ -269,6 +269,8 @@ var listCmd = &cobra.Command{
 		}
 		defer store.Close()
 
+		showCompleted, _ := cmd.Flags().GetBool("completed")
+
 		// List by category
 		if jsonOutput {
 			resp := ListResponse{}
@@ -281,8 +283,10 @@ var listCmd = &cobra.Command{
 			if tasks, err := store.ListReview(); err == nil {
 				resp.Review = tasks
 			}
-			if tasks, err := store.ListByState(types.StateCompleted); err == nil {
-				resp.Completed = tasks
+			if showCompleted {
+				if tasks, err := store.ListByState(types.StateCompleted); err == nil {
+					resp.Completed = tasks
+				}
 			}
 			return printJSON(resp)
 		}
@@ -294,6 +298,15 @@ var listCmd = &cobra.Command{
 			{"Active", store.ListActive},
 			{"Pending", store.ListPending},
 			{"Review", store.ListReview},
+		}
+
+		if showCompleted {
+			categories = append(categories, struct {
+				name   string
+				loader func() ([]*types.Task, error)
+			}{"Completed", func() ([]*types.Task, error) {
+				return store.ListByState(types.StateCompleted)
+			}})
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -688,9 +701,9 @@ func cleanAll(store *task.Store, projectDir string, cfg *types.Config, gitClient
 func init() {
 	cleanCmd.Flags().Bool("branches", false, "Also delete git branches for cleaned tasks")
 	cleanCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt (use with caution)")
-}
 
-func init() {
+	listCmd.Flags().BoolP("completed", "c", false, "Include completed tasks")
+
 	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 
