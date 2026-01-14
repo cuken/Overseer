@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -287,15 +288,30 @@ func (a *Agent) parseResponse(content string) (*types.AgentResponse, error) {
 		rawJSON = sanitizeJSON(rawJSON)
 
 		var calls []types.ToolCall
+		// Try parsing as array first
 		if err := json.Unmarshal([]byte(rawJSON), &calls); err != nil {
-			a.log.Error("Failed to parse tool calls: %v. Raw: %s", err, rawJSON)
-			return nil, fmt.Errorf("failed to parse tool calls JSON: %w. Raw content: %s", err, rawJSON)
+			// Try parsing as a single object
+			var singleCall types.ToolCall
+			if err2 := json.Unmarshal([]byte(rawJSON), &singleCall); err2 == nil {
+				calls = []types.ToolCall{singleCall}
+			} else {
+				a.log.Error("Failed to parse tool calls: %v. Raw: %s", err, rawJSON)
+				return nil, fmt.Errorf("failed to parse tool calls JSON: %w. Raw content: %s", err, rawJSON)
+			}
+		}
+
+		// Ensure all calls have an ID
+		for i := range calls {
+			if calls[i].ID == "" {
+				h := sha256.New()
+				h.Write([]byte(fmt.Sprintf("%s-%d-%d", calls[i].Name, time.Now().UnixNano(), i)))
+				calls[i].ID = fmt.Sprintf("call_%x", h.Sum(nil)[:4])
+			}
 		}
 		response.ToolCalls = calls
 	} else if strings.Contains(content, "<tool_calls>") {
-		return nil, fmt.Errorf("detected <tool_calls> tag but failed to extract content. Please ensure JSON array is strictly inside tags.")
+		return nil, fmt.Errorf("detected <tool_calls> tag but failed to extract content. Please ensure JSON is strictly inside tags.")
 	}
-
 	// Check for handoff signal
 	if strings.Contains(content, "<handoff>") || strings.Contains(content, "needs_handoff: true") {
 		response.NeedsHandoff = true
@@ -333,20 +349,23 @@ func sanitizeJSON(rawJSON string) string {
 	commaRe := regexp.MustCompile(`,\s*([}\]])`)
 	rawJSON = commaRe.ReplaceAllString(rawJSON, "$1")
 
-	// Attempt to fix missing array closure
 	trimmed := strings.TrimSpace(rawJSON)
-	if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
-		trimmed += "]"
-	}
-
-	// Attempt to fix missing object closure: [ { ... ] -> [ { ... } ]
-	// Ignore empty array "[]"
-	if strings.HasSuffix(trimmed, "]") && !strings.HasSuffix(trimmed, "}]") && trimmed != "[]" {
-		trimmed = trimmed[:len(trimmed)-1] + "}]"
+	if trimmed == "" {
+		return ""
 	}
 
 	// Try to parse - if it works, we're done
 	var test interface{}
+	if json.Unmarshal([]byte(trimmed), &test) == nil {
+		return trimmed
+	}
+
+	// Attempt to fix missing array closure
+	if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
+		trimmed += "]"
+	}
+
+	// Try again
 	if json.Unmarshal([]byte(trimmed), &test) == nil {
 		return trimmed
 	}
