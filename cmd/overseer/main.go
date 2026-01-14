@@ -362,22 +362,42 @@ var listCmd = &cobra.Command{
 			}
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		type catInfo struct {
+			name  string
+			tasks []*types.Task
+		}
+		var loadedCats []catInfo
+		var allIDs []string
 
 		for _, cat := range categories {
 			tasks, err := cat.loader()
-			if err != nil {
+			if err != nil || len(tasks) == 0 {
 				continue
 			}
-			if len(tasks) == 0 {
-				continue
-			}
-
-			fmt.Printf("\n%s (%d):\n", cat.name, len(tasks))
-			fmt.Fprintln(w, "  ID\tSTATE\tPHASE\tPRIORITY\tTITLE")
+			loadedCats = append(loadedCats, catInfo{cat.name, tasks})
 			for _, t := range tasks {
+				allIDs = append(allIDs, t.ID)
+			}
+		}
+
+		if len(allIDs) == 0 {
+			fmt.Println("No tasks found.")
+			return nil
+		}
+
+		highlights := formatIDHighlights(allIDs)
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+		for _, cat := range loadedCats {
+			fmt.Printf("\n%s (%d):\n", cat.name, len(cat.tasks))
+			fmt.Fprintln(w, "  ID\tSTATE\tPHASE\tPRIORITY\tTITLE")
+			for _, t := range cat.tasks {
+				idStr := t.ID
+				if h, ok := highlights[t.ID]; ok {
+					idStr = h
+				}
 				fmt.Fprintf(w, "  %s\t%s\t%s\t%d\t%s\n",
-					t.ID, t.State, t.Phase, t.Priority, truncate(t.Title, 40))
+					idStr, t.State, t.Phase, t.Priority, truncate(t.Title, 40))
 			}
 			w.Flush()
 		}

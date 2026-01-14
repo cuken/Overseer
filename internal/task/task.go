@@ -94,13 +94,13 @@ func MarkRequiresApproval(task *types.Task, reason string) {
 	task.UpdatedAt = time.Now()
 }
 
-// generateID creates a new hash-based task ID (e.g. bd-a1b2c3d4)
+// generateID creates a new hash-based task ID (e.g. os-a1b2c3d4)
 func generateID(title, description string, createdAt time.Time) string {
 	h := sha256.New()
 	h.Write([]byte(title))
 	h.Write([]byte(description))
 	h.Write([]byte(createdAt.Format(time.RFC3339Nano)))
-	return "bd-" + hex.EncodeToString(h.Sum(nil))[:8]
+	return "os-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 // slugify creates a URL-safe slug from a title
