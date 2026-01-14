@@ -1,104 +1,135 @@
 package task
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
+	"time"
 
+	"github.com/cuken/overseer/internal/storage/jsonl"
+	"github.com/cuken/overseer/internal/storage/sqlite"
 	"github.com/cuken/overseer/pkg/types"
-	"gopkg.in/yaml.v3"
 )
 
-// Store manages task persistence using YAML files
+// Store manages task persistence using SQLite and JSONL
 type Store struct {
-	baseDir string
-	mu      sync.RWMutex
+	db        *sqlite.SQLiteStore
+	jsonlPath string
+	mu        sync.RWMutex
 }
 
-// NewStore creates a new task store
-func NewStore(tasksDir string) *Store {
-	return &Store{
-		baseDir: tasksDir,
+// NewStore creates a new task store and synchronizes with JSONL
+func NewStore(tasksDir string) (*Store, error) {
+	dbPath := filepath.Join(tasksDir, "tasks.db")
+	jsonlPath := filepath.Join(tasksDir, "tasks.jsonl")
+
+	db, err := sqlite.New(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open sqlite db: %w", err)
 	}
+
+	s := &Store{
+		db:        db,
+		jsonlPath: jsonlPath,
+	}
+
+	// Initial sync: Import JSONL to DB
+	if err := s.syncFromJSONL(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to sync from JSONL: %w", err)
+	}
+
+	return s, nil
 }
 
-// Save persists a task to the appropriate state directory.
-// It ensures that the task only exists in one state directory.
-func (s *Store) Save(task *types.Task) error {
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+func (s *Store) syncFromJSONL() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := s.dirForState(task.State)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
-	}
-
-	path := filepath.Join(dir, task.ID+".yaml")
-	data, err := yaml.Marshal(task)
+	tasks, err := jsonl.Read(s.jsonlPath)
 	if err != nil {
-		return fmt.Errorf("failed to marshal task: %w", err)
+		return err
+	}
+	if len(tasks) == 0 {
+		return nil
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("failed to write task file: %w", err)
-	}
-
-	// Cleanup any other copies in different state directories
-	states := []string{"active", "pending", "review", "completed"}
-	currentStateDir := filepath.Base(dir)
-	for _, stateDir := range states {
-		if stateDir == currentStateDir {
-			continue
-		}
-		otherPath := filepath.Join(s.baseDir, stateDir, task.ID+".yaml")
-		if _, err := os.Stat(otherPath); err == nil {
-			os.Remove(otherPath)
-		}
-	}
-
-	return nil
+	ctx := context.Background()
+	return s.db.Import(ctx, tasks)
 }
 
-// Load reads a task by ID, searching all state directories
+func (s *Store) syncToJSONL() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx := context.Background()
+	tasks, err := s.db.Export(ctx)
+	if err != nil {
+		return err
+	}
+
+	return jsonl.Write(s.jsonlPath, tasks)
+}
+
+// Save persists a task and syncs to JSONL
+func (s *Store) Save(task *types.Task) error {
+	// Update timestamp
+	task.UpdatedAt = time.Now()
+
+	ctx := context.Background()
+
+	// Check if exists
+	existing, err := s.db.GetTask(ctx, task.ID)
+	if err != nil && err.Error() != "sql: no rows in result set" {
+		// Ignore not found error, treat as new
+	}
+
+	if existing == nil {
+		if err := s.db.CreateTask(ctx, task); err != nil {
+			return err
+		}
+	} else {
+		if err := s.db.UpdateTask(ctx, task); err != nil {
+			return err
+		}
+	}
+
+	return s.syncToJSONL()
+}
+
+// Load reads a task by ID
 func (s *Store) Load(id string) (*types.Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	states := []string{"active", "pending", "review", "completed"}
-	for _, state := range states {
-		path := filepath.Join(s.baseDir, state, id+".yaml")
-		if _, err := os.Stat(path); err == nil {
-			return s.loadFromPath(path)
-		}
-	}
-
-	return nil, fmt.Errorf("task not found: %s", id)
+	ctx := context.Background()
+	return s.db.GetTask(ctx, id)
 }
 
-// LoadByPrefix loads a task by ID prefix (for CLI convenience)
+// LoadByPrefix loads a task by ID prefix
 func (s *Store) LoadByPrefix(prefix string) (*types.Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	// inefficient but simple: list all and filter.
+	// Optimally, SQLite 'LIKE' query.
+	// But `GetTask` is by ID.
+	// Let's list all active/pending/etc which covers most.
+	// Actually, just query DB.
+
+	// Add ListByPrefix to SQLiteStore?
+	// For now, load all is safer if I don't want to change SQLiteStore struct in this file.
+	// But I defined SQLiteStore in internal/storage/sqlite.
+
+	ctx := context.Background()
+	all, err := s.db.ListAllTasks(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var matches []*types.Task
-	states := []string{"active", "pending", "review", "completed"}
-
-	for _, state := range states {
-		dir := filepath.Join(s.baseDir, state)
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-
-		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ".yaml") {
-				task, err := s.loadFromPath(filepath.Join(dir, entry.Name()))
-				if err == nil {
-					matches = append(matches, task)
-				}
-			}
+	for _, t := range all {
+		if len(t.ID) >= len(prefix) && t.ID[:len(prefix)] == prefix {
+			matches = append(matches, t)
 		}
 	}
 
@@ -112,173 +143,61 @@ func (s *Store) LoadByPrefix(prefix string) (*types.Task, error) {
 	return matches[0], nil
 }
 
-// Delete removes a task file
+// Delete removes a task
 func (s *Store) Delete(task *types.Task) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Search all directories for the task
-	states := []string{"active", "pending", "review", "completed"}
-	for _, state := range states {
-		path := filepath.Join(s.baseDir, state, task.ID+".yaml")
-		if _, err := os.Stat(path); err == nil {
-			return os.Remove(path)
-		}
+	ctx := context.Background()
+	if err := s.db.DeleteTask(ctx, task.ID); err != nil {
+		return err
 	}
-
-	return nil
+	return s.syncToJSONL()
 }
 
-// Move transitions a task to a new state directory
+// Move transitions a task (State change is just an update in SQLite)
 func (s *Store) Move(task *types.Task, oldState, newState types.TaskState) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	oldDir := s.dirForState(oldState)
-	newDir := s.dirForState(newState)
-
-	oldPath := filepath.Join(oldDir, task.ID+".yaml")
-	newPath := filepath.Join(newDir, task.ID+".yaml")
-
-	// Ensure new directory exists
-	if err := os.MkdirAll(newDir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", newDir, err)
-	}
-
-	// Write to new location
-	data, err := yaml.Marshal(task)
-	if err != nil {
-		return fmt.Errorf("failed to marshal task: %w", err)
-	}
-
-	if err := os.WriteFile(newPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write task file: %w", err)
-	}
-
-	// Only remove from old location if it's actually different
-	if oldPath != newPath {
-		os.Remove(oldPath)
-	}
-
-	// Also cleanup any other copies, just in case
-	states := []string{"active", "pending", "review", "completed"}
-	currentStateDir := filepath.Base(newDir)
-	for _, stateDir := range states {
-		if stateDir == currentStateDir {
-			continue
-		}
-		otherPath := filepath.Join(s.baseDir, stateDir, task.ID+".yaml")
-		if _, err := os.Stat(otherPath); err == nil {
-			os.Remove(otherPath)
-		}
-	}
-
-	return nil
+	task.State = newState
+	return s.Save(task)
 }
 
 // ListByState returns all tasks in a given state
 func (s *Store) ListByState(state types.TaskState) ([]*types.Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	dir := s.dirForState(state)
-	return s.loadFromDir(dir)
+	ctx := context.Background()
+	return s.db.ListTasks(ctx, state)
 }
 
-// ListAll returns all tasks from all state directories
+// ListAll returns all tasks
 func (s *Store) ListAll() ([]*types.Task, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var allTasks []*types.Task
-	states := []string{"active", "pending", "review", "completed"}
-
-	for _, state := range states {
-		dir := filepath.Join(s.baseDir, state)
-		tasks, err := s.loadFromDir(dir)
-		if err != nil {
-			continue
-		}
-		allTasks = append(allTasks, tasks...)
-	}
-
-	return allTasks, nil
+	ctx := context.Background()
+	return s.db.ListAllTasks(ctx)
 }
 
 // ListActive returns all tasks that are currently being worked on
 func (s *Store) ListActive() ([]*types.Task, error) {
-	tasks, err := s.loadFromDir(filepath.Join(s.baseDir, "active"))
+	ctx := context.Background()
+	// In file store, "active" was a directory containing generic active states.
+	// In types.go: StatePlanning, StateImplementing, etc. are active.
+	// We need to query for all active states.
+
+	// Helper to fetch all and filter
+	all, err := s.db.ListAllTasks(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Filter for actually active states
 	var active []*types.Task
-	for _, t := range tasks {
+	for _, t := range all {
 		if t.State.IsActive() {
 			active = append(active, t)
 		}
 	}
-
 	return active, nil
 }
 
 // ListPending returns all pending tasks
 func (s *Store) ListPending() ([]*types.Task, error) {
-	return s.loadFromDir(filepath.Join(s.baseDir, "pending"))
+	return s.ListByState(types.StatePending)
 }
 
 // ListReview returns all tasks awaiting human review
 func (s *Store) ListReview() ([]*types.Task, error) {
-	return s.loadFromDir(filepath.Join(s.baseDir, "review"))
-}
-
-func (s *Store) loadFromPath(path string) (*types.Task, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read task file: %w", err)
-	}
-
-	var task types.Task
-	if err := yaml.Unmarshal(data, &task); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal task: %w", err)
-	}
-
-	return &task, nil
-}
-
-func (s *Store) loadFromDir(dir string) ([]*types.Task, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to read directory: %w", err)
-	}
-
-	var tasks []*types.Task
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".yaml") {
-			task, err := s.loadFromPath(filepath.Join(dir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			tasks = append(tasks, task)
-		}
-	}
-
-	return tasks, nil
-}
-
-func (s *Store) dirForState(state types.TaskState) string {
-	switch state {
-	case types.StateReview:
-		return filepath.Join(s.baseDir, "review")
-	case types.StateCompleted:
-		return filepath.Join(s.baseDir, "completed")
-	case types.StatePending:
-		return filepath.Join(s.baseDir, "pending")
-	default:
-		return filepath.Join(s.baseDir, "active")
-	}
+	return s.ListByState(types.StateReview)
 }

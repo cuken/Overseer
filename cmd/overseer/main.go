@@ -203,7 +203,11 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
 
 		if len(args) > 0 {
 			// Show specific task
@@ -259,7 +263,11 @@ var listCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
 
 		// List by category
 		if jsonOutput {
@@ -273,8 +281,7 @@ var listCmd = &cobra.Command{
 			if tasks, err := store.ListReview(); err == nil {
 				resp.Review = tasks
 			}
-			completedDir := filepath.Join(projectDir, cfg.Paths.Tasks, "completed")
-			if tasks, err := store.LoadFromDir(completedDir); err == nil {
+			if tasks, err := store.ListByState(types.StateCompleted); err == nil {
 				resp.Completed = tasks
 			}
 			return printJSON(resp)
@@ -329,7 +336,11 @@ var approveCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
 
 		t, err := store.LoadByPrefix(args[0])
 		if err != nil {
@@ -402,7 +413,11 @@ var logsCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
 		t, err := store.LoadByPrefix(args[0])
 		if err != nil {
 			return fmt.Errorf("task not found: %w", err)
@@ -464,7 +479,11 @@ WARNING: This operation cannot be undone!`,
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
 		gitClient := git.New(projectDir)
 
 		// Get flags
@@ -579,8 +598,7 @@ func cleanAll(store *task.Store, projectDir string, cfg *types.Config, gitClient
 		{"active", store.ListActive},
 		{"review", store.ListReview},
 		{"completed", func() ([]*types.Task, error) {
-			completedDir := filepath.Join(projectDir, cfg.Paths.Tasks, "completed")
-			return store.LoadFromDir(completedDir)
+			return store.ListByState(types.StateCompleted)
 		}},
 	}
 
