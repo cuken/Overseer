@@ -55,24 +55,32 @@ func (s *Store) Close() error {
 // Flush immediately persists any pending changes to JSONL
 func (s *Store) Flush() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if !s.dirty {
-		s.mu.Unlock()
 		return nil
 	}
+
+	return s.flushLocked()
+}
+
+func (s *Store) flushLocked() error {
 	s.dirty = false
 	if s.flushTimer != nil {
 		s.flushTimer.Stop()
 		s.flushTimer = nil
 	}
-	s.mu.Unlock()
 
-	return s.syncToJSONL()
+	ctx := context.Background()
+	tasks, err := s.db.Export(ctx)
+	if err != nil {
+		return err
+	}
+
+	return jsonl.Write(s.jsonlPath, tasks)
 }
 
-func (s *Store) scheduleFlush() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) scheduleFlushLocked() {
 	s.dirty = true
 	if s.flushTimer != nil {
 		s.flushTimer.Stop()
@@ -136,12 +144,13 @@ func CalculateContentHash(t *types.Task) string {
 
 // Save persists a task and syncs to JSONL
 func (s *Store) Save(task *types.Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Calculate new hash
 	newHash := CalculateContentHash(task)
 	task.ContentHash = newHash
 
-	// Update timestamp if this is a modification (existing task)
-	// We always update timestamp on Save as it implies *some* change (status or content)
 	task.UpdatedAt = time.Now()
 
 	ctx := context.Background()
@@ -157,26 +166,29 @@ func (s *Store) Save(task *types.Task) error {
 			return err
 		}
 	} else {
-		// Optimization: If content hasn't changed, we could log it or handle differently
-		// For now, we update everything to capture state changes
 		if err := s.db.UpdateTask(ctx, task); err != nil {
 			return err
 		}
 	}
 
-	// Always sync to JSONL for backup/human readability (debounced)
-	s.scheduleFlush()
+	s.scheduleFlushLocked()
 	return nil
 }
 
 // Load reads a task by ID
 func (s *Store) Load(id string) (*types.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	return s.db.GetTask(ctx, id)
 }
 
 // LoadByPrefix loads a task by ID prefix
 func (s *Store) LoadByPrefix(prefix string) (*types.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	matches, err := s.db.GetTaskByPrefix(ctx, prefix)
 	if err != nil {
@@ -195,11 +207,14 @@ func (s *Store) LoadByPrefix(prefix string) (*types.Task, error) {
 
 // Delete removes a task
 func (s *Store) Delete(task *types.Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	ctx := context.Background()
 	if err := s.db.DeleteTask(ctx, task.ID); err != nil {
 		return err
 	}
-	s.scheduleFlush()
+	s.scheduleFlushLocked()
 	return nil
 }
 
@@ -211,18 +226,27 @@ func (s *Store) Move(task *types.Task, oldState, newState types.TaskState) error
 
 // ListByState returns all tasks in a given state
 func (s *Store) ListByState(state types.TaskState) ([]*types.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	return s.db.ListTasks(ctx, state)
 }
 
 // ListAll returns all tasks
 func (s *Store) ListAll() ([]*types.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	return s.db.ListAllTasks(ctx)
 }
 
 // ListActive returns all tasks that are currently being worked on
 func (s *Store) ListActive() ([]*types.Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	return s.db.ListActiveTasks(ctx)
 }
@@ -240,16 +264,25 @@ func (s *Store) ListReview() ([]*types.Task, error) {
 // Worker operations
 
 func (s *Store) UpdateWorkerStatus(status *types.WorkerStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	ctx := context.Background()
 	return s.db.UpdateWorkerStatus(ctx, status)
 }
 
 func (s *Store) ListWorkers() ([]*types.WorkerStatus, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	ctx := context.Background()
 	return s.db.ListWorkers(ctx)
 }
 
 func (s *Store) PruneStaleWorkers(threshold time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	ctx := context.Background()
 	return s.db.PruneStaleWorkers(ctx, threshold)
 }
