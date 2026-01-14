@@ -9,7 +9,7 @@ import (
 
 // Import bulk inserts/updates tasks from a slice
 func (s *SQLiteStore) Import(ctx context.Context, tasks []*types.Task) error {
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -19,8 +19,8 @@ func (s *SQLiteStore) Import(ctx context.Context, tasks []*types.Task) error {
 	INSERT INTO tasks (
 		id, title, description, branch, state, phase, priority,
 		requires_approval, dependencies, merge_target, created_at,
-		updated_at, handoffs, conflict_files, parent_task_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		updated_at, handoffs, conflict_files, parent_task_id, content_hash
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title,
 		description=excluded.description,
@@ -35,8 +35,8 @@ func (s *SQLiteStore) Import(ctx context.Context, tasks []*types.Task) error {
 		updated_at=excluded.updated_at,
 		handoffs=excluded.handoffs,
 		conflict_files=excluded.conflict_files,
-		parent_task_id=excluded.parent_task_id
-	`
+		parent_task_id=excluded.parent_task_id,
+		content_hash=excluded.content_hash`
 
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
@@ -48,7 +48,7 @@ func (s *SQLiteStore) Import(ctx context.Context, tasks []*types.Task) error {
 		_, err := stmt.ExecContext(ctx,
 			t.ID, t.Title, t.Description, t.Branch, t.State, t.Phase, t.Priority,
 			t.RequiresApproval, jsonString(t.Dependencies), t.MergeTarget, t.CreatedAt,
-			t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID,
+			t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID, t.ContentHash,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to upsert task %s: %w", t.ID, err)
