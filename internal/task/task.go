@@ -1,20 +1,22 @@
 package task
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cuken/overseer/pkg/types"
-	"github.com/google/uuid"
 )
 
 // NewTask creates a new task from a request
 func NewTask(title, description string) *types.Task {
-	id := generateID()
+	createdAt := time.Now()
+	id := generateID(title, description, createdAt)
 	slug := slugify(title)
-	branch := fmt.Sprintf("feature/task-%s-%s", id[:8], slug)
+	branch := fmt.Sprintf("feature/task-%s-%s", id[3:], slug)
 
 	return &types.Task{
 		ID:               id,
@@ -27,21 +29,22 @@ func NewTask(title, description string) *types.Task {
 		RequiresApproval: false,
 		Dependencies:     nil,
 		MergeTarget:      "main",
-		CreatedAt:        time.Now(),
-		UpdatedAt:        time.Now(),
+		CreatedAt:        createdAt,
+		UpdatedAt:        createdAt,
 		Handoffs:         0,
 	}
 }
 
 // NewConflictResolutionTask creates a task to resolve merge conflicts
 func NewConflictResolutionTask(parentTask *types.Task, conflictFiles []string) *types.Task {
-	id := generateID()
+	createdAt := time.Now()
 	title := fmt.Sprintf("Resolve merge conflicts for: %s", parentTask.Title)
 	description := fmt.Sprintf("Merge conflicts detected when merging %s into %s.\n\nConflicting files:\n",
 		parentTask.Branch, parentTask.MergeTarget)
 	for _, f := range conflictFiles {
 		description += fmt.Sprintf("- %s\n", f)
 	}
+	id := generateID(title, description, createdAt)
 
 	return &types.Task{
 		ID:               id,
@@ -91,9 +94,13 @@ func MarkRequiresApproval(task *types.Task, reason string) {
 	task.UpdatedAt = time.Now()
 }
 
-// generateID creates a new unique task ID
-func generateID() string {
-	return uuid.New().String()
+// generateID creates a new hash-based task ID (e.g. bd-a1b2c3d4)
+func generateID(title, description string, createdAt time.Time) string {
+	h := sha256.New()
+	h.Write([]byte(title))
+	h.Write([]byte(description))
+	h.Write([]byte(createdAt.Format(time.RFC3339Nano)))
+	return "bd-" + hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 // slugify creates a URL-safe slug from a title
@@ -222,5 +229,5 @@ func ParseRelativeDate(s string) (time.Time, error) {
 // Summary returns a brief summary of the task
 func Summary(task *types.Task) string {
 	return fmt.Sprintf("[%s] %s (%s/%s) - Priority: %d",
-		task.ID[:8], task.Title, task.State, task.Phase, task.Priority)
+		task.ID, task.Title, task.State, task.Phase, task.Priority)
 }

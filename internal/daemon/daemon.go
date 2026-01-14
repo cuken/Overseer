@@ -179,7 +179,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 		case newTask := <-d.watcher.NewTasks():
 			d.log.Success("New task created: %s - %s",
-				newTask.ID[:8], newTask.Title)
+				newTask.ID, newTask.Title)
 
 		case err := <-d.watcher.Errors():
 			d.log.Error("Watcher error: %v", err)

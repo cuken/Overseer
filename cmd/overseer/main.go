@@ -261,7 +261,7 @@ var statusCmd = &cobra.Command{
 			fmt.Fprintln(w, "ID\tSTATE\tPHASE\tTITLE\tHANDOFFS")
 			for _, t := range active {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n",
-					t.ID[:8], t.State, t.Phase, truncate(t.Title, 40), t.Handoffs)
+					t.ID, t.State, t.Phase, truncate(t.Title, 40), t.Handoffs)
 			}
 			w.Flush()
 		}
@@ -377,7 +377,7 @@ var listCmd = &cobra.Command{
 			fmt.Fprintln(w, "  ID\tSTATE\tPHASE\tPRIORITY\tTITLE")
 			for _, t := range tasks {
 				fmt.Fprintf(w, "  %s\t%s\t%s\t%d\t%s\n",
-					t.ID[:8], t.State, t.Phase, t.Priority, truncate(t.Title, 40))
+					t.ID, t.State, t.Phase, t.Priority, truncate(t.Title, 40))
 			}
 			w.Flush()
 		}
@@ -455,7 +455,7 @@ var approveCmd = &cobra.Command{
 			})
 		}
 
-		fmt.Printf("Approved task %s\n", t.ID[:8])
+		fmt.Printf("Approved task %s\n", t.ID)
 		fmt.Printf("  Title: %s\n", t.Title)
 		fmt.Printf("  New state: %s\n", t.State)
 		fmt.Println("\nThe daemon will continue processing this task.")
@@ -594,7 +594,7 @@ WARNING: This operation cannot be undone!`,
 
 func cleanTask(t *types.Task, store *task.Store, projectDir string, cfg *types.Config, gitClient *git.Git, cleanBranches bool, quiet bool) error {
 	if !quiet {
-		fmt.Printf("Cleaning task %s (%s)...\n", t.ID[:8], t.Title)
+		fmt.Printf("Cleaning task %s (%s)...\n", t.ID, t.Title)
 	}
 
 	// Remove task file from current state directory
@@ -613,7 +613,7 @@ func cleanTask(t *types.Task, store *task.Store, projectDir string, cfg *types.C
 	}
 
 	// Remove task-specific log file
-	logFile := filepath.Join(projectDir, cfg.Paths.Logs, fmt.Sprintf("agent-%s.log", t.ID[:8]))
+	logFile := filepath.Join(projectDir, cfg.Paths.Logs, fmt.Sprintf("agent-%s.log", t.ID))
 	if err := os.Remove(logFile); err != nil && !os.IsNotExist(err) {
 		if !quiet {
 			fmt.Printf("Warning: failed to delete log file: %v\n", err)
@@ -643,7 +643,7 @@ func cleanTask(t *types.Task, store *task.Store, projectDir string, cfg *types.C
 	}
 
 	if !quiet {
-		fmt.Printf("Task %s cleaned successfully\n", t.ID[:8])
+		fmt.Printf("Task %s cleaned successfully\n", t.ID)
 	}
 	return nil
 }
@@ -702,7 +702,7 @@ func cleanAll(store *task.Store, projectDir string, cfg *types.Config, gitClient
 	for _, t := range allTasks {
 		if err := cleanTask(t, store, projectDir, cfg, gitClient, cleanBranches, quiet); err != nil {
 			if !quiet {
-				fmt.Printf("Warning: failed to clean task %s: %v\n", t.ID[:8], err)
+				fmt.Printf("Warning: failed to clean task %s: %v\n", t.ID, err)
 			}
 		} else {
 			cleanedIDs = append(cleanedIDs, t.ID)
@@ -832,7 +832,7 @@ var agentsCmd = &cobra.Command{
 
 			taskID := "-"
 			if worker.TaskID != "" {
-				taskID = worker.TaskID[:8]
+				taskID = worker.TaskID
 			}
 
 			// Flag dead agents
@@ -941,7 +941,7 @@ var gateListCmd = &cobra.Command{
 					timeout = "EXPIRED"
 				}
 			}
-			fmt.Printf("%-8s %-12s %-10s %-20s %s\n", t.ID[:8], t.Gate.Type, t.Gate.Status, timeout, t.Gate.Reference)
+			fmt.Printf("%-11s %-12s %-10s %-20s %s\n", t.ID, t.Gate.Type, t.Gate.Status, timeout, t.Gate.Reference)
 		}
 		return nil
 	},
@@ -972,7 +972,7 @@ var gateClearCmd = &cobra.Command{
 		}
 
 		if t.State != types.StateBlocked || t.Gate == nil {
-			return fmt.Errorf("task %s is not blocked by a gate", t.ID[:8])
+			return fmt.Errorf("task %s is not blocked by a gate", t.ID)
 		}
 
 		t.Gate.Status = types.GateStatusCleared
@@ -983,7 +983,7 @@ var gateClearCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Gate cleared for task %s. Task is now pending.\n", t.ID[:8])
+		fmt.Printf("Gate cleared for task %s. Task is now pending.\n", t.ID)
 		return nil
 	},
 }
