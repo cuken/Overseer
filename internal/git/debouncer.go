@@ -108,7 +108,8 @@ func (d *Debouncer) Flush() error {
 	}
 
 	// Push if enabled
-	if d.autoPush {
+	// Push if enabled
+	if d.autoPush && d.gitClient.HasRemote() {
 		if err := d.gitClient.Push(); err != nil {
 			// Try setting upstream if push fails
 			if err := d.gitClient.PushSetUpstream(d.branch); err != nil {
