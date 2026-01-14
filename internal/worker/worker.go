@@ -3,12 +3,12 @@ package worker
 import (
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 	"time"
 
 	"github.com/cuken/overseer/internal/agent"
 	"github.com/cuken/overseer/internal/git"
+	"github.com/cuken/overseer/internal/logger"
 	"github.com/cuken/overseer/internal/mcp"
 	"github.com/cuken/overseer/internal/task"
 	"github.com/cuken/overseer/pkg/types"
@@ -27,6 +27,7 @@ type Worker struct {
 	merger      *git.Merger
 	llamaClient *agent.LlamaClient
 	verbose     bool
+	log         *logger.Logger
 }
 
 // SetVerbose enables verbose logging
@@ -35,14 +36,18 @@ func (w *Worker) SetVerbose(v bool) {
 	if w.llamaClient != nil {
 		w.llamaClient.SetDebug(v)
 	}
+	if w.log != nil {
+		w.log.SetVerbose(v)
+	}
 }
 
 // NewWorker creates a new worker
-func NewWorker(id int, projectDir string, cfg *types.Config, store *task.Store, queue *task.Queue, mcpClient *mcp.Client) *Worker {
+func NewWorker(id int, projectDir string, cfg *types.Config, store *task.Store, queue *task.Queue, mcpClient *mcp.Client, logsDir string) *Worker {
 	gitClient := git.New(projectDir)
 	branchMgr := git.NewBranchManager(gitClient, cfg.Git)
 	merger := git.NewMerger(gitClient, branchMgr, cfg.Git)
 	llamaClient := agent.NewLlamaClient(cfg.Llama)
+	log := logger.New(fmt.Sprintf("Worker-%d", id), logsDir)
 
 	return &Worker{
 		id:          id,
@@ -55,13 +60,14 @@ func NewWorker(id int, projectDir string, cfg *types.Config, store *task.Store, 
 		branchMgr:   branchMgr,
 		merger:      merger,
 		llamaClient: llamaClient,
+		log:         log,
 	}
 }
 
 // Run starts the worker loop
 func (w *Worker) Run(ctx context.Context) {
-	log.Printf("[Worker %d] Started", w.id)
-	defer log.Printf("[Worker %d] Stopped", w.id)
+	w.log.Info("Started")
+	defer w.log.Info("Stopped")
 
 	for {
 		select {
@@ -82,11 +88,11 @@ func (w *Worker) Run(ctx context.Context) {
 			}
 		}
 
-		log.Printf("[Worker %d] Processing task %s: %s", w.id, t.ID[:8], t.Title)
+		w.log.Info("Processing task %s: %s", t.ID[:8], t.Title)
 
 		// Process the task
 		if err := w.processTask(ctx, t); err != nil {
-			log.Printf("[Worker %d] Task %s failed: %v", w.id, t.ID[:8], err)
+			w.log.LogError(err, fmt.Sprintf("Task %s failed", t.ID[:8]))
 			// Re-queue if it's a recoverable error
 			if t.State != types.StateBlocked && t.State != types.StateCompleted {
 				w.queue.Enqueue(t)
@@ -109,14 +115,14 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 	// Create branch if needed
 	if t.Branch == "" || !w.gitClient.BranchExists(t.Branch) {
 		if err := w.branchMgr.CreateTaskBranch(t); err != nil {
-			log.Printf("[Worker %d] Failed to create branch: %v", w.id, err)
+			w.log.Warn("Failed to create branch: %v", err)
 			// Continue without branch for now
 		} else {
-			log.Printf("[Worker %d] Created branch %s", w.id, t.Branch)
+			w.log.Success("Created branch %s", t.Branch)
 		}
 	} else {
 		if err := w.branchMgr.SwitchToTaskBranch(t); err != nil {
-			log.Printf("[Worker %d] Failed to switch to branch: %v", w.id, err)
+			w.log.Warn("Failed to switch to branch: %v", err)
 		}
 	}
 
@@ -124,6 +130,14 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 	if err := w.store.Save(t); err != nil {
 		return err
 	}
+
+	// Initialize debouncer for auto-commits
+	debounceInterval := time.Duration(w.cfg.Git.DebounceSecs) * time.Second
+	if debounceInterval == 0 {
+		debounceInterval = 5 * time.Second
+	}
+	debouncer := git.NewDebouncer(w.gitClient, debounceInterval, t.Branch, w.cfg.Git.AutoPush, w.log)
+	defer debouncer.Stop()
 
 	// Run agent loop
 	for t.State.IsActive() {
@@ -135,7 +149,7 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 
 		// Check if approval is required
 		if t.RequiresApproval {
-			log.Printf("[Worker %d] Task %s requires approval", w.id, t.ID[:8])
+			w.log.Info("Task %s requires approval", t.ID[:8])
 			oldState := t.State
 			if err := task.TransitionTo(t, types.StateReview); err == nil {
 				w.store.Move(t, oldState, types.StateReview)
@@ -144,7 +158,7 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 		}
 
 		// Run agent
-		agentResult := w.runAgent(ctx, t)
+		agentResult := w.runAgent(ctx, t, debouncer)
 
 		// Handle agent result
 		switch agentResult {
@@ -162,8 +176,8 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 					return w.attemptMerge(ctx, t)
 				}
 				// If transition failed, log it but continue - agent may need to do more work
-				log.Printf("[Worker %d] Could not transition to merging: state=%s, phase=%s",
-					w.id, t.State, t.Phase)
+				w.log.Debug("Could not transition to merging: state=%s, phase=%s",
+					t.State, t.Phase)
 			}
 
 			// Agent completed but not ready to merge - continue the loop
@@ -171,8 +185,8 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 			continue
 		case AgentResultHandoff:
 			// Agent needs handoff, continue with fresh agent
-			log.Printf("[Worker %d] Agent handoff for task %s (generation %d)",
-				w.id, t.ID[:8], t.Handoffs)
+			w.log.Info("Agent handoff for task %s (generation %d)",
+				t.ID[:8], t.Handoffs)
 			w.store.Save(t)
 			continue
 		case AgentResultBlocked:
@@ -183,7 +197,7 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 			return nil
 		case AgentResultError:
 			// Agent encountered an error
-			log.Printf("[Worker %d] Agent error for task %s", w.id, t.ID[:8])
+			w.log.Error("Agent error for task %s", t.ID[:8])
 			return fmt.Errorf("agent error")
 		}
 	}
@@ -201,18 +215,20 @@ const (
 	AgentResultError
 )
 
-func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
+func (w *Worker) runAgent(ctx context.Context, t *types.Task, debouncer *git.Debouncer) AgentResult {
 	// Check llama.cpp server health
 	healthCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	if err := w.llamaClient.Health(healthCtx); err != nil {
-		log.Printf("[Worker %d] LLM server not available: %v", w.id, err)
+		w.log.Error("LLM server not available: %v", err)
 		return AgentResultError
 	}
 
 	// Create agent
-	ag := agent.NewAgent(t, w.llamaClient, w.cfg.Llama, w.projectDir, filepath.Join(w.projectDir, w.cfg.Paths.Source))
+	logsDir := filepath.Join(w.projectDir, w.cfg.Paths.Logs)
+	ag := agent.NewAgent(t, w.llamaClient, w.cfg.Llama, w.projectDir, filepath.Join(w.projectDir, w.cfg.Paths.Source), logsDir)
+	ag.SetVerbose(w.verbose)
 
 	// Set up tool executor
 	var mcpExecutor agent.ToolExecutor
@@ -225,6 +241,7 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 		mcpExecutor: mcpExecutor,
 		task:        t,
 		store:       w.store,
+		debouncer:   debouncer,
 	}
 	ag.SetToolExecutor(builtinExecutor)
 
@@ -239,14 +256,14 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 
 	// Persist state changes (e.g. from XML state tags)
 	if err := w.store.Save(t); err != nil {
-		log.Printf("[Worker %d] Failed to save task state: %v", w.id, err)
+		w.log.Warn("Failed to save task state: %v", err)
 	}
 
 	if err != nil {
 		if err.Error() == "handoff required" {
 			return AgentResultHandoff
 		}
-		log.Printf("[Worker %d] Agent error: %v", w.id, err)
+		w.log.LogError(err, "Agent execution failed")
 		return AgentResultError
 	}
 
@@ -254,31 +271,31 @@ func (w *Worker) runAgent(ctx context.Context, t *types.Task) AgentResult {
 }
 
 func (w *Worker) attemptMerge(ctx context.Context, t *types.Task) error {
-	log.Printf("[Worker %d] Attempting merge for task %s", w.id, t.ID[:8])
+	w.log.Info("Attempting merge for task %s", t.ID[:8])
 
 	// Safety net: commit any uncommitted changes the agent left behind
 	if hasChanges, _ := w.gitClient.HasChanges(); hasChanges {
-		log.Printf("[Worker %d] Found uncommitted changes, committing before merge", w.id)
+		w.log.Info("Found uncommitted changes, committing before merge")
 		if err := w.gitClient.AddAll(); err != nil {
-			log.Printf("[Worker %d] Failed to stage changes: %v", w.id, err)
+			w.log.Warn("Failed to stage changes: %v", err)
 		} else {
 			commitMsg := fmt.Sprintf("[%s] Auto-commit before merge\n\nTask: %s", t.ID[:8], t.Title)
 			if err := w.gitClient.Commit(commitMsg); err != nil {
-				log.Printf("[Worker %d] Failed to commit changes: %v", w.id, err)
+				w.log.Warn("Failed to commit changes: %v", err)
 			} else {
-				log.Printf("[Worker %d] Auto-committed changes", w.id)
+				w.log.Success("Auto-committed changes")
 			}
 		}
 	}
 
 	result, err := w.merger.AttemptMerge(t)
 	if err != nil {
-		log.Printf("[Worker %d] Merge error: %v", w.id, err)
+		w.log.LogError(err, "Merge failed")
 		return err
 	}
 
 	if result.Success {
-		log.Printf("[Worker %d] Merge successful: %s", w.id, result.Message)
+		w.log.Success("Merge successful: %s", result.Message)
 		if err := task.TransitionTo(t, types.StateCompleted); err == nil {
 			w.store.Move(t, types.StateMerging, types.StateCompleted)
 		}
@@ -288,7 +305,7 @@ func (w *Worker) attemptMerge(ctx context.Context, t *types.Task) error {
 	}
 
 	// Merge conflict
-	log.Printf("[Worker %d] Merge conflict detected in %d files", w.id, len(result.ConflictFiles))
+	w.log.Warn("Merge conflict detected in %d files", len(result.ConflictFiles))
 
 	// Create conflict resolution task
 	conflictTask := task.NewConflictResolutionTask(t, result.ConflictFiles)
@@ -310,6 +327,7 @@ type BuiltinToolExecutor struct {
 	mcpExecutor agent.ToolExecutor
 	task        *types.Task
 	store       *task.Store
+	debouncer   *git.Debouncer
 }
 
 func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
@@ -364,7 +382,8 @@ func (e *BuiltinToolExecutor) Execute(ctx context.Context, call types.ToolCall) 
 			}
 		}
 
-		log.Printf("[Worker] Tool updated task state to %s (Reason: %s)", newState, reason)
+		// Note: using a simple log here since this is called from multiple workers
+		fmt.Printf("[Worker] Tool updated task state to %s (Reason: %s)\n", newState, reason)
 
 		return types.ToolResult{
 			CallID:  call.ID,
@@ -373,13 +392,22 @@ func (e *BuiltinToolExecutor) Execute(ctx context.Context, call types.ToolCall) 
 		}
 	}
 
+	var result types.ToolResult
 	if e.mcpExecutor != nil {
-		return e.mcpExecutor.Execute(ctx, call)
+		result = e.mcpExecutor.Execute(ctx, call)
+	} else {
+		result = types.ToolResult{
+			CallID:  call.ID,
+			Success: false,
+			Error:   fmt.Sprintf("tool not found: %s", call.Name),
+		}
 	}
 
-	return types.ToolResult{
-		CallID:  call.ID,
-		Success: false,
-		Error:   fmt.Sprintf("tool not found: %s", call.Name),
+	// Trigger debounced commit if tool succeeded
+	// The flush will only commit if there are actual git changes
+	if result.Success && e.debouncer != nil {
+		e.debouncer.MarkDirty(fmt.Sprintf("Auto-commit: Used tool %s", call.Name))
 	}
+
+	return result
 }

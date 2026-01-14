@@ -109,6 +109,7 @@ type GitConfig struct {
 	BranchPrefix string `yaml:"branch_prefix" mapstructure:"branch_prefix"`
 	AutoPush     bool   `yaml:"auto_push" mapstructure:"auto_push"`
 	SignCommits  bool   `yaml:"sign_commits" mapstructure:"sign_commits"`
+	DebounceSecs int    `yaml:"debounce_secs" mapstructure:"debounce_secs"`
 }
 
 // WorkerConfig holds worker pool configuration
@@ -154,6 +155,7 @@ func DefaultConfig() *Config {
 			BranchPrefix: "feature",
 			AutoPush:     true,
 			SignCommits:  false,
+			DebounceSecs: 5,
 		},
 		Workers: WorkerConfig{
 			Count:           1,

@@ -103,6 +103,7 @@ func setDefaults(v *viper.Viper, cfg *types.Config) {
 	v.SetDefault("git.branch_prefix", cfg.Git.BranchPrefix)
 	v.SetDefault("git.auto_push", cfg.Git.AutoPush)
 	v.SetDefault("git.sign_commits", cfg.Git.SignCommits)
+	v.SetDefault("git.debounce_secs", cfg.Git.DebounceSecs)
 
 	// Worker defaults
 	v.SetDefault("workers.count", cfg.Workers.Count)

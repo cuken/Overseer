@@ -2,9 +2,9 @@ package worker
 
 import (
 	"context"
-	"log"
 	"sync"
 
+	"github.com/cuken/overseer/internal/logger"
 	"github.com/cuken/overseer/internal/mcp"
 	"github.com/cuken/overseer/internal/task"
 	"github.com/cuken/overseer/pkg/types"
@@ -21,21 +21,29 @@ type Pool struct {
 	wg         sync.WaitGroup
 	cancel     context.CancelFunc
 	verbose    bool
+	logsDir    string
+	log        *logger.Logger
 }
 
 // SetVerbose enables verbose logging
 func (p *Pool) SetVerbose(v bool) {
 	p.verbose = v
+	if p.log != nil {
+		p.log.SetVerbose(v)
+	}
 }
 
 // NewPool creates a new worker pool
-func NewPool(projectDir string, cfg *types.Config, store *task.Store, queue *task.Queue, mcpClient *mcp.Client) *Pool {
+func NewPool(projectDir string, cfg *types.Config, store *task.Store, queue *task.Queue, mcpClient *mcp.Client, logsDir string) *Pool {
+	log := logger.New("Pool", logsDir)
 	return &Pool{
 		projectDir: projectDir,
 		cfg:        cfg,
 		store:      store,
 		queue:      queue,
 		mcpClient:  mcpClient,
+		logsDir:    logsDir,
+		log:        log,
 	}
 }
 
@@ -48,11 +56,11 @@ func (p *Pool) Start(ctx context.Context) {
 		workerCount = 1
 	}
 
-	log.Printf("[Pool] Starting %d workers", workerCount)
+	p.log.Info("Starting %d workers", workerCount)
 
 	p.workers = make([]*Worker, workerCount)
 	for i := 0; i < workerCount; i++ {
-		p.workers[i] = NewWorker(i, p.projectDir, p.cfg, p.store, p.queue, p.mcpClient)
+		p.workers[i] = NewWorker(i, p.projectDir, p.cfg, p.store, p.queue, p.mcpClient, p.logsDir)
 		p.workers[i].SetVerbose(p.verbose)
 		p.wg.Add(1)
 		go func(w *Worker) {
@@ -64,12 +72,12 @@ func (p *Pool) Start(ctx context.Context) {
 
 // Stop gracefully stops all workers
 func (p *Pool) Stop() {
-	log.Printf("[Pool] Stopping workers...")
+	p.log.Info("Stopping workers...")
 	if p.cancel != nil {
 		p.cancel()
 	}
 	p.wg.Wait()
-	log.Printf("[Pool] All workers stopped")
+	p.log.Info("All workers stopped")
 }
 
 // WorkerCount returns the number of active workers
