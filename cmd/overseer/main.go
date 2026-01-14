@@ -130,7 +130,7 @@ var initCmd = &cobra.Command{
 		fmt.Println("Initialized overseer in", cwd)
 		fmt.Println("\nCreated directories:")
 		fmt.Printf("  %s/\n", cfg.Paths.Requests)
-		fmt.Printf("  %s/{active,pending,review,completed}/\n", cfg.Paths.Tasks)
+		fmt.Printf("  %s/\n", cfg.Paths.Tasks)
 		fmt.Printf("  %s/\n", cfg.Paths.Workspaces)
 		fmt.Printf("  %s/\n", cfg.Paths.Logs)
 		fmt.Printf("  %s/\n", cfg.Paths.Source)

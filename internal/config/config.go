@@ -121,10 +121,7 @@ func setDefaults(v *viper.Viper, cfg *types.Config) {
 func EnsureDirectories(projectDir string, cfg *types.Config) error {
 	dirs := []string{
 		filepath.Join(projectDir, cfg.Paths.Requests),
-		filepath.Join(projectDir, cfg.Paths.Tasks, "active"),
-		filepath.Join(projectDir, cfg.Paths.Tasks, "pending"),
-		filepath.Join(projectDir, cfg.Paths.Tasks, "review"),
-		filepath.Join(projectDir, cfg.Paths.Tasks, "completed"),
+		filepath.Join(projectDir, cfg.Paths.Tasks),
 		filepath.Join(projectDir, cfg.Paths.Workspaces),
 		filepath.Join(projectDir, cfg.Paths.Logs),
 	}

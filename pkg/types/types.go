@@ -47,22 +47,6 @@ type Task struct {
 	ParentTaskID     string    `yaml:"parent_task_id,omitempty" json:"parent_task_id,omitempty"`
 }
 
-// StateDirectory returns the directory name for a given state
-func (s TaskState) Directory() string {
-	switch s {
-	case StatePending, StatePlanning, StateImplementing, StateTesting, StateDebugging:
-		return "active"
-	case StateReview:
-		return "review"
-	case StateCompleted:
-		return "completed"
-	case StateBlocked, StateConflict, StateMerging:
-		return "active"
-	default:
-		return "pending"
-	}
-}
-
 // IsActive returns true if the task is actively being worked on
 func (s TaskState) IsActive() bool {
 	switch s {
