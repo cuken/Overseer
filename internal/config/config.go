@@ -148,10 +148,12 @@ func EnsureGitignore(projectDir string) error {
 	// Entries that should be in .gitignore
 	entries := []string{
 		"# Overseer - autonomous agent orchestration",
-		".overseer/tasks/*.db-shm",
-		".overseer/tasks/*.db-wal",
-		".overseer/logs/",
-		".overseer/workspaces/",
+		".overseer/",
+		"!.overseer/config.yaml",
+		"!.overseer/tasks/tasks.jsonl",
+		"!.overseer/requests/",
+		".overseer/requests/*.md",
+		"!.overseer/requests/.gitkeep",
 	}
 
 	// Read existing .gitignore

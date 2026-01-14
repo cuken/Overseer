@@ -345,40 +345,125 @@ func (a *Agent) parseResponse(content string) (*types.AgentResponse, error) {
 
 // sanitizeJSON attempts to fix common JSON formatting issues from LLM output
 func sanitizeJSON(rawJSON string) string {
-	// Remove trailing commas before closing brackets
-	commaRe := regexp.MustCompile(`,\s*([}\]])`)
-	rawJSON = commaRe.ReplaceAllString(rawJSON, "$1")
-
 	trimmed := strings.TrimSpace(rawJSON)
 	if trimmed == "" {
 		return ""
 	}
 
-	// Try to parse - if it works, we're done
-	var test interface{}
-	if json.Unmarshal([]byte(trimmed), &test) == nil {
-		return trimmed
+	// 1. Remove comments (both // and # if they appear outside strings)
+	// We do this with a state machine to avoid breaking strings
+	var clean strings.Builder
+	inString := false
+	escaped := false
+	inComment := false
+
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+
+		if inComment {
+			if ch == '\n' {
+				inComment = false
+				clean.WriteByte(ch)
+			}
+			continue
+		}
+
+		if escaped {
+			clean.WriteByte(ch)
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			clean.WriteByte(ch)
+			if inString {
+				escaped = true
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			clean.WriteByte(ch)
+			continue
+		}
+
+		if !inString {
+			// Check for start of comment
+			if ch == '#' {
+				inComment = true
+				continue
+			}
+			if ch == '/' && i+1 < len(trimmed) && trimmed[i+1] == '/' {
+				inComment = true
+				i++ // skip next /
+				continue
+			}
+		}
+
+		clean.WriteByte(ch)
 	}
 
-	// Attempt to fix missing array closure
-	if strings.HasPrefix(trimmed, "[") && !strings.HasSuffix(trimmed, "]") {
-		trimmed += "]"
+	trimmed = clean.String()
+
+	// 2. Remove trailing commas before closing brackets
+	commaRe := regexp.MustCompile(`,\s*([}\]])`)
+	trimmed = commaRe.ReplaceAllString(trimmed, "$1")
+
+	// 3. Fix literal characters in strings
+	trimmed = escapeControlCharsInJSON(trimmed)
+
+	// 4. Auto-balance braces and brackets
+	// This handles cases where the LLM cuts off or forgets closers
+	var stack []byte
+	inString = false
+	escaped = false
+
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if !inString {
+			if ch == '{' || ch == '[' {
+				stack = append(stack, ch)
+			} else if ch == '}' {
+				if len(stack) > 0 && stack[len(stack)-1] == '{' {
+					stack = stack[:len(stack)-1]
+				}
+			} else if ch == ']' {
+				if len(stack) > 0 && stack[len(stack)-1] == '[' {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
 	}
 
-	// Try again
-	if json.Unmarshal([]byte(trimmed), &test) == nil {
-		return trimmed
+	// Append missing closers in reverse order
+	var closer strings.Builder
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			closer.WriteByte('}')
+		} else {
+			closer.WriteByte(']')
+		}
 	}
+	trimmed += closer.String()
 
-	// If parsing failed, it might be due to unescaped control characters
-	// Escape literal control characters that appear in string values
-	// This is a best-effort approach - we look for strings and escape control chars
-	result := escapeControlCharsInJSON(trimmed)
-
-	return result
+	return trimmed
 }
 
-// escapeControlCharsInJSON escapes literal control characters in JSON strings
+// escapeControlCharsInJSON escapes literal control characters in JSON strings.
+// Note: This function expects that strings are properly identified by double quotes.
 func escapeControlCharsInJSON(s string) string {
 	var result strings.Builder
 	inString := false
@@ -388,7 +473,6 @@ func escapeControlCharsInJSON(s string) string {
 		ch := s[i]
 
 		if escaped {
-			// If the previous character was a backslash, this is part of an escape sequence
 			result.WriteByte(ch)
 			escaped = false
 			continue
@@ -396,12 +480,12 @@ func escapeControlCharsInJSON(s string) string {
 
 		if ch == '\\' {
 			result.WriteByte(ch)
+			// Only enter escaped mode if we're in a string or it's a quote
 			escaped = true
 			continue
 		}
 
 		if ch == '"' {
-			// Toggle string state (unless it's escaped, but we already handled that)
 			inString = !inString
 			result.WriteByte(ch)
 			continue

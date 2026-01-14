@@ -196,8 +196,14 @@ var addCmd = &cobra.Command{
 		}
 
 		// Copy to requests directory with original filename
+		// Ensure requests directory exists (it might have been deleted/cleaned)
+		requestsDir := filepath.Join(projectDir, cfg.Paths.Requests)
+		if err := os.MkdirAll(requestsDir, 0755); err != nil {
+			return fmt.Errorf("failed to create requests directory: %w", err)
+		}
+
 		filename := filepath.Base(srcPath)
-		dstPath := filepath.Join(projectDir, cfg.Paths.Requests, filename)
+		dstPath := filepath.Join(requestsDir, filename)
 		if err := os.WriteFile(dstPath, content, 0644); err != nil {
 			return fmt.Errorf("failed to write request: %w", err)
 		}

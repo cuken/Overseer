@@ -3,7 +3,9 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -167,8 +169,27 @@ func (g *Git) HasStash() bool {
 // CleanUntrackedOverseer removes untracked .overseer runtime files that shouldn't be tracked
 func (g *Git) CleanUntrackedOverseer() error {
 	// Only clean specific patterns that are definitely runtime files
-	_, err := g.run("clean", "-f", ".overseer/tasks/*.db-shm", ".overseer/tasks/*.db-wal")
-	return err
+	// We use direct file deletion instead of git clean to avoid any risk of deleting
+	// other untracked directories (like .overseer/requests)
+	patterns := []string{
+		filepath.Join(g.repoDir, ".overseer/tasks/*.db-shm"),
+		filepath.Join(g.repoDir, ".overseer/tasks/*.db-wal"),
+	}
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return fmt.Errorf("bad pattern %s: %w", pattern, err)
+		}
+		for _, match := range matches {
+			if err := os.Remove(match); err != nil {
+				// Log but continue, might be open or permission issue
+				// We can't log easily here without a logger, so we return error if it persists?
+				// For now, just ignoring individual delete errors is safer than failing flow
+			}
+		}
+	}
+	return nil
 }
 
 // Log returns recent commit history

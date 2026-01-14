@@ -100,7 +100,9 @@ You must respond in a structured format. Each response should include:
 
 
 1. **Thinking**: Your analysis and reasoning (wrapped in <thinking> tags)
-2. **Tool Calls**: Any tools you need to execute (as JSON array)
+2. **Tool Calls**: Any tools you need to execute (as a valid JSON array wrapped in <tool_calls> tags). 
+
+IMPORTANT: The content inside <tool_calls> MUST be a single, valid JSON array of tool call objects. Do not include comments, trailing commas, or any other text inside the <tool_calls> tags. Ensure all strings are properly escaped and all brackets/braces are correctly balanced and closed.
 
 Example response:
 <thinking>

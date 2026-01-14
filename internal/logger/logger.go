@@ -50,14 +50,14 @@ func (l LogLevel) String() string {
 
 // Logger provides structured logging with colors and file output
 type Logger struct {
-	component   string
-	color       string
-	logDir      string
-	logFile     *os.File
-	verbose     bool
-	mu          sync.Mutex
-	noColor     bool
-	minLevel    LogLevel
+	component string
+	color     string
+	logDir    string
+	logFile   *os.File
+	verbose   bool
+	mu        sync.Mutex
+	noColor   bool
+	minLevel  LogLevel
 }
 
 var (
