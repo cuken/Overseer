@@ -3,7 +3,9 @@ package worker
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/cuken/overseer/internal/agent"
@@ -16,18 +18,22 @@ import (
 
 // Worker processes tasks from the queue
 type Worker struct {
-	id          int
-	projectDir  string
-	cfg         *types.Config
-	store       *task.Store
-	queue       *task.Queue
-	mcpClient   *mcp.Client
-	gitClient   *git.Git
-	branchMgr   *git.BranchManager
-	merger      *git.Merger
-	llamaClient *agent.LlamaClient
-	verbose     bool
-	log         *logger.Logger
+	id            int
+	projectDir    string
+	cfg           *types.Config
+	store         *task.Store
+	queue         *task.Queue
+	mcpClient     *mcp.Client
+	gitClient     *git.Git
+	branchMgr     *git.BranchManager
+	merger        *git.Merger
+	llamaClient   *agent.LlamaClient
+	verbose       bool
+	log           *logger.Logger
+	mu            sync.Mutex
+	currentState  types.AgentState
+	currentTaskID string
+	startedAt     time.Time
 }
 
 // SetVerbose enables verbose logging
@@ -50,28 +56,42 @@ func NewWorker(id int, projectDir string, cfg *types.Config, store *task.Store, 
 	log := logger.New(fmt.Sprintf("Worker-%d", id), logsDir)
 
 	return &Worker{
-		id:          id,
-		projectDir:  projectDir,
-		cfg:         cfg,
-		store:       store,
-		queue:       queue,
-		mcpClient:   mcpClient,
-		gitClient:   gitClient,
-		branchMgr:   branchMgr,
-		merger:      merger,
-		llamaClient: llamaClient,
-		log:         log,
+		id:           id,
+		projectDir:   projectDir,
+		cfg:          cfg,
+		store:        store,
+		queue:        queue,
+		mcpClient:    mcpClient,
+		gitClient:    gitClient,
+		branchMgr:    branchMgr,
+		merger:       merger,
+		llamaClient:  llamaClient,
+		log:          log,
+		startedAt:    time.Now(),
+		currentState: types.AgentStateIdle,
 	}
 }
 
 func (w *Worker) reportStatus(state types.AgentState, taskID string) {
+	w.mu.Lock()
+	if state != "" {
+		w.currentState = state
+	}
+	if taskID != "" {
+		w.currentTaskID = taskID
+	}
+	currentID := w.currentTaskID
+	currentState := w.currentState
+	startedAt := w.startedAt
+	w.mu.Unlock()
+
 	status := &types.WorkerStatus{
 		ID:            fmt.Sprintf("worker-%d", w.id),
-		Pid:           0, // TODO: get PID
-		TaskID:        taskID,
-		State:         state,
+		Pid:           os.Getpid(),
+		TaskID:        currentID,
+		State:         currentState,
 		LastHeartbeat: time.Now(),
-		StartedAt:     time.Now(), // TODO: track actual start time
+		StartedAt:     startedAt,
 	}
 	if err := w.store.UpdateWorkerStatus(status); err != nil {
 		w.log.Warn("Failed to report worker status: %v", err)
@@ -92,7 +112,7 @@ func (w *Worker) Run(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w.reportStatus(types.AgentStateRunning, "")
+				w.reportStatus("", "")
 			}
 		}
 	}()
@@ -105,6 +125,7 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 
 		// Get next task from queue
+		w.reportStatus(types.AgentStateIdle, "")
 		t := w.queue.Dequeue()
 		if t == nil {
 			// No tasks available, wait a bit
@@ -118,8 +139,20 @@ func (w *Worker) Run(ctx context.Context) {
 
 		w.log.Info("Processing task %s: %s", t.ID[:8], t.Title)
 
+		// Set current task
+		w.reportStatus(types.AgentStateRunning, t.ID)
+
 		// Process the task
-		if err := w.processTask(ctx, t); err != nil {
+		err := w.processTask(ctx, t)
+
+		// Clear current task
+		w.mu.Lock()
+		w.currentTaskID = ""
+		w.currentState = types.AgentStateIdle
+		w.mu.Unlock()
+		w.reportStatus(types.AgentStateIdle, "")
+
+		if err != nil {
 			w.log.LogError(err, fmt.Sprintf("Task %s failed", t.ID[:8]))
 			// Re-queue if it's a recoverable error
 			if t.State != types.StateBlocked && t.State != types.StateCompleted {
