@@ -134,10 +134,11 @@ func CalculateContentHash(t *types.Task) string {
 		h.Write([]byte(dep))
 	}
 
-	// Note: We deliberately exclude dynamic state fields like:
-	// - State, Phase, Handoffs, RequiresApproval, UpdatedAt
-	// - Branch (generated), ID (generated)
-	// - ConflictFiles (runtime state)
+	if t.Gate != nil {
+		h.Write([]byte(t.Gate.Type))
+		h.Write([]byte(t.Gate.Reference))
+		h.Write([]byte(t.Gate.Timeout.Format(time.RFC3339)))
+	}
 
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -224,6 +225,13 @@ func (s *Store) Move(task *types.Task, oldState, newState types.TaskState) error
 	return s.Save(task)
 }
 
+// BlockWithGate moves a task to blocked state and attaches a gate
+func (s *Store) BlockWithGate(task *types.Task, gate *types.Gate) error {
+	task.State = types.StateBlocked
+	task.Gate = gate
+	return s.Save(task)
+}
+
 // ListByState returns all tasks in a given state
 func (s *Store) ListByState(state types.TaskState) ([]*types.Task, error) {
 	s.mu.RLock()
@@ -259,6 +267,11 @@ func (s *Store) ListPending() ([]*types.Task, error) {
 // ListReview returns all tasks awaiting human review
 func (s *Store) ListReview() ([]*types.Task, error) {
 	return s.ListByState(types.StateReview)
+}
+
+// ListBlocked returns all blocked tasks
+func (s *Store) ListBlocked() ([]*types.Task, error) {
+	return s.ListByState(types.StateBlocked)
 }
 
 // Worker operations

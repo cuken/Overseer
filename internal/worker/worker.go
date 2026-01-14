@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -400,6 +401,11 @@ func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
 			Description: "Update the state and phase of the current task. Use this to progress through the workflow: planning→implementing→testing→debugging→merging. Always provide BOTH new_state and new_phase together. Do NOT use 'review' - complete the full workflow instead.",
 			Parameters:  `{"type": "object", "properties": {"new_state": {"type": "string", "enum": ["implementing", "testing", "debugging", "merging", "blocked"], "description": "The workflow state to transition to. Use: implementing (after planning), testing (after implementing), debugging (if tests fail), merging (when tests pass), blocked (if stuck)."}, "new_phase": {"type": "string", "enum": ["implement", "test", "debug"], "description": "The execution phase. Use: implement (with implementing state), test (with testing state), debug (with debugging state)."}, "reason": {"type": "string", "description": "Brief explanation for the transition"}}, "required": ["new_state", "reason"]}`,
 		},
+		{
+			Name:        "wait",
+			Description: "Block the task and wait for an external condition (gate). The agent will stop execution and the task will be resumed when the gate clears or times out.",
+			Parameters:  `{"type": "object", "properties": {"type": {"type": "string", "enum": ["github-run", "pr-approval", "timer", "human-input"], "description": "The type of gate to wait for."}, "ref": {"type": "string", "description": "Reference identifier (e.g., GitHub run ID, PR number)."}, "timeout": {"type": "string", "description": "Timeout duration (e.g., '30m', '1h', '5m'). If type is 'timer', this is the wait duration."}, "reason": {"type": "string", "description": "Description of what we are waiting for."}}, "required": ["type", "reason"]}`,
+		},
 	}
 	if e.mcpExecutor != nil {
 		tools = append(tools, e.mcpExecutor.AvailableTools()...)
@@ -408,6 +414,54 @@ func (e *BuiltinToolExecutor) AvailableTools() []agent.ToolInfo {
 }
 
 func (e *BuiltinToolExecutor) Execute(ctx context.Context, call types.ToolCall) types.ToolResult {
+	if call.Name == "wait" {
+		gateType, _ := call.Arguments["type"].(string)
+		ref, _ := call.Arguments["ref"].(string)
+		timeoutStr, _ := call.Arguments["timeout"].(string)
+		reason, _ := call.Arguments["reason"].(string)
+
+		var timeout time.Time
+		if timeoutStr != "" {
+			duration, err := time.ParseDuration(timeoutStr)
+			if err == nil {
+				timeout = time.Now().Add(duration)
+			}
+		}
+
+		h := sha256.New()
+		h.Write([]byte(time.Now().String()))
+		gateID := fmt.Sprintf("gate-%x", h.Sum(nil)[:4])
+
+		gate := &types.Gate{
+			ID:        gateID,
+			Type:      types.GateType(gateType),
+			Status:    types.GateStatusPending,
+			Reference: ref,
+			Message:   reason,
+			Timeout:   timeout,
+			CreatedAt: time.Now(),
+		}
+
+		// Flush git changes before blocking
+		if e.debouncer != nil {
+			e.debouncer.Flush()
+		}
+
+		if err := e.store.BlockWithGate(e.task, gate); err != nil {
+			return types.ToolResult{
+				CallID:  call.ID,
+				Success: false,
+				Error:   fmt.Sprintf("Failed to block task with gate: %v", err),
+			}
+		}
+
+		return types.ToolResult{
+			CallID:  call.ID,
+			Success: true,
+			Output:  fmt.Sprintf("Task blocked by gate %s (%s). Execution will stop.", gate.ID, gate.Type),
+		}
+	}
+
 	if call.Name == "update_task_state" {
 		newStateStr, _ := call.Arguments["new_state"].(string)
 		newPhaseStr, _ := call.Arguments["new_phase"].(string)

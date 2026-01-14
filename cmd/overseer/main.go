@@ -717,6 +717,7 @@ func init() {
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(agentsCmd)
+	rootCmd.AddCommand(gateCmd)
 }
 
 var agentsCmd = &cobra.Command{
@@ -823,4 +824,107 @@ func printJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+var gateCmd = &cobra.Command{
+	Use:   "gate",
+	Short: "Manage task gates",
+}
+
+var gateListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all active gates",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectDir, err := config.GetProjectDir()
+		if err != nil {
+			return err
+		}
+		cfg, err := config.Load(projectDir)
+		if err != nil {
+			return err
+		}
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		blocked, err := store.ListBlocked()
+		if err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			var gates []*types.Gate
+			for _, t := range blocked {
+				if t.Gate != nil {
+					gates = append(gates, t.Gate)
+				}
+			}
+			return json.NewEncoder(os.Stdout).Encode(gates)
+		}
+
+		fmt.Printf("%-8s %-12s %-10s %-20s %s\n", "TASK", "TYPE", "STATUS", "TIMEOUT", "REFERENCE")
+		fmt.Println("--------------------------------------------------------------------------------")
+		for _, t := range blocked {
+			if t.Gate == nil {
+				continue
+			}
+			timeout := "none"
+			if !t.Gate.Timeout.IsZero() {
+				timeout = time.Until(t.Gate.Timeout).Round(time.Second).String()
+				if time.Now().After(t.Gate.Timeout) {
+					timeout = "EXPIRED"
+				}
+			}
+			fmt.Printf("%-8s %-12s %-10s %-20s %s\n", t.ID[:8], t.Gate.Type, t.Gate.Status, timeout, t.Gate.Reference)
+		}
+		return nil
+	},
+}
+
+var gateClearCmd = &cobra.Command{
+	Use:   "clear [task-id]",
+	Short: "Manually clear a gate",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectDir, err := config.GetProjectDir()
+		if err != nil {
+			return err
+		}
+		cfg, err := config.Load(projectDir)
+		if err != nil {
+			return err
+		}
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		t, err := store.LoadByPrefix(args[0])
+		if err != nil {
+			return err
+		}
+
+		if t.State != types.StateBlocked || t.Gate == nil {
+			return fmt.Errorf("task %s is not blocked by a gate", t.ID[:8])
+		}
+
+		t.Gate.Status = types.GateStatusCleared
+		now := time.Now()
+		t.Gate.ClearedAt = &now
+		t.State = types.StatePending
+		if err := store.Save(t); err != nil {
+			return err
+		}
+
+		fmt.Printf("Gate cleared for task %s. Task is now pending.\n", t.ID[:8])
+		return nil
+	},
+}
+
+func init() {
+	gateCmd.AddCommand(gateListCmd)
+	gateCmd.AddCommand(gateClearCmd)
 }
