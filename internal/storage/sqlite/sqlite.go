@@ -58,7 +58,8 @@ func (s *SQLiteStore) initSchema() error {
 		updated_at DATETIME,
 		handoffs INTEGER,
 		conflict_files TEXT,
-		parent_task_id TEXT
+		parent_task_id TEXT,
+		content_hash TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 	CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
@@ -99,13 +100,13 @@ func (s *SQLiteStore) CreateTask(ctx context.Context, t *types.Task) error {
 	INSERT INTO tasks (
 		id, title, description, branch, state, phase, priority,
 		requires_approval, dependencies, merge_target, created_at,
-		updated_at, handoffs, conflict_files, parent_task_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		updated_at, handoffs, conflict_files, parent_task_id, content_hash
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err := s.db.ExecContext(ctx, query,
 		t.ID, t.Title, t.Description, t.Branch, t.State, t.Phase, t.Priority,
 		t.RequiresApproval, jsonString(t.Dependencies), t.MergeTarget, t.CreatedAt,
-		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID,
+		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID, t.ContentHash,
 	)
 	return err
 }
@@ -121,13 +122,13 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, t *types.Task) error {
 	UPDATE tasks SET
 		title=?, description=?, branch=?, state=?, phase=?, priority=?,
 		requires_approval=?, dependencies=?, merge_target=?, created_at=?,
-		updated_at=?, handoffs=?, conflict_files=?, parent_task_id=?
+		updated_at=?, handoffs=?, conflict_files=?, parent_task_id=?, content_hash=?
 	WHERE id=?`
 
 	_, err := s.db.ExecContext(ctx, query,
 		t.Title, t.Description, t.Branch, t.State, t.Phase, t.Priority,
 		t.RequiresApproval, jsonString(t.Dependencies), t.MergeTarget, t.CreatedAt,
-		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID,
+		t.UpdatedAt, t.Handoffs, jsonString(t.ConflictFiles), t.ParentTaskID, t.ContentHash,
 		t.ID,
 	)
 	return err
@@ -183,13 +184,19 @@ func (s *SQLiteStore) scanTask(row scannable) (*types.Task, error) {
 	var t types.Task
 	var deps, conflicts string
 
+	var hash sql.NullString // Handle potential nulls for existing records
+
 	err := row.Scan(
 		&t.ID, &t.Title, &t.Description, &t.Branch, &t.State, &t.Phase,
 		&t.Priority, &t.RequiresApproval, &deps, &t.MergeTarget,
-		&t.CreatedAt, &t.UpdatedAt, &t.Handoffs, &conflicts, &t.ParentTaskID,
+		&t.CreatedAt, &t.UpdatedAt, &t.Handoffs, &conflicts, &t.ParentTaskID, &hash,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	if hash.Valid {
+		t.ContentHash = hash.String
 	}
 
 	if err := fromJSON(deps, &t.Dependencies); err != nil {

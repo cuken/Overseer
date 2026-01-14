@@ -45,6 +45,7 @@ type Task struct {
 	Handoffs         int       `yaml:"handoffs" json:"handoffs"`
 	ConflictFiles    []string  `yaml:"conflict_files,omitempty" json:"conflict_files,omitempty"`
 	ParentTaskID     string    `yaml:"parent_task_id,omitempty" json:"parent_task_id,omitempty"`
+	ContentHash      string    `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
 }
 
 // IsActive returns true if the task is actively being worked on

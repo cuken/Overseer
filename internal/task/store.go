@@ -2,6 +2,8 @@ package task
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -76,9 +78,36 @@ func (s *Store) syncToJSONL() error {
 	return jsonl.Write(s.jsonlPath, tasks)
 }
 
+// CalculateContentHash computes a stable hash of the task's content
+func CalculateContentHash(t *types.Task) string {
+	h := sha256.New()
+
+	// Hash critical fields that define the task content
+	h.Write([]byte(t.Title))
+	h.Write([]byte(t.Description))
+	h.Write([]byte(t.MergeTarget))
+	h.Write([]byte(t.ParentTaskID))
+
+	for _, dep := range t.Dependencies {
+		h.Write([]byte(dep))
+	}
+
+	// Note: We deliberately exclude dynamic state fields like:
+	// - State, Phase, Handoffs, RequiresApproval, UpdatedAt
+	// - Branch (generated), ID (generated)
+	// - ConflictFiles (runtime state)
+
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // Save persists a task and syncs to JSONL
 func (s *Store) Save(task *types.Task) error {
-	// Update timestamp
+	// Calculate new hash
+	newHash := CalculateContentHash(task)
+	task.ContentHash = newHash
+
+	// Update timestamp if this is a modification (existing task)
+	// We always update timestamp on Save as it implies *some* change (status or content)
 	task.UpdatedAt = time.Now()
 
 	ctx := context.Background()
@@ -94,11 +123,14 @@ func (s *Store) Save(task *types.Task) error {
 			return err
 		}
 	} else {
+		// Optimization: If content hasn't changed, we could log it or handle differently
+		// For now, we update everything to capture state changes
 		if err := s.db.UpdateTask(ctx, task); err != nil {
 			return err
 		}
 	}
 
+	// Always sync to JSONL for backup/human readability
 	return s.syncToJSONL()
 }
 
