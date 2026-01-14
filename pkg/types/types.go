@@ -30,21 +30,21 @@ const (
 
 // Task represents a unit of work to be completed by agents
 type Task struct {
-	ID               string    `yaml:"id"`
-	Title            string    `yaml:"title"`
-	Description      string    `yaml:"description"`
-	Branch           string    `yaml:"branch"`
-	State            TaskState `yaml:"state"`
-	Phase            TaskPhase `yaml:"phase"`
-	Priority         int       `yaml:"priority"`
-	RequiresApproval bool      `yaml:"requires_approval"`
-	Dependencies     []string  `yaml:"dependencies,omitempty"`
-	MergeTarget      string    `yaml:"merge_target"`
-	CreatedAt        time.Time `yaml:"created_at"`
-	UpdatedAt        time.Time `yaml:"updated_at"`
-	Handoffs         int       `yaml:"handoffs"`
-	ConflictFiles    []string  `yaml:"conflict_files,omitempty"`
-	ParentTaskID     string    `yaml:"parent_task_id,omitempty"`
+	ID               string    `yaml:"id" json:"id"`
+	Title            string    `yaml:"title" json:"title"`
+	Description      string    `yaml:"description" json:"description"`
+	Branch           string    `yaml:"branch" json:"branch"`
+	State            TaskState `yaml:"state" json:"state"`
+	Phase            TaskPhase `yaml:"phase" json:"phase"`
+	Priority         int       `yaml:"priority" json:"priority"`
+	RequiresApproval bool      `yaml:"requires_approval" json:"requires_approval"`
+	Dependencies     []string  `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
+	MergeTarget      string    `yaml:"merge_target" json:"merge_target"`
+	CreatedAt        time.Time `yaml:"created_at" json:"created_at"`
+	UpdatedAt        time.Time `yaml:"updated_at" json:"updated_at"`
+	Handoffs         int       `yaml:"handoffs" json:"handoffs"`
+	ConflictFiles    []string  `yaml:"conflict_files,omitempty" json:"conflict_files,omitempty"`
+	ParentTaskID     string    `yaml:"parent_task_id,omitempty" json:"parent_task_id,omitempty"`
 }
 
 // StateDirectory returns the directory name for a given state
@@ -79,10 +79,10 @@ func (s TaskState) CanTransitionTo(next TaskState) bool {
 	// This prevents agents from prematurely requesting human review
 	validTransitions := map[TaskState][]TaskState{
 		StatePending:      {StatePlanning},
-		StatePlanning:     {StateImplementing, StateBlocked},              // No review from planning
-		StateImplementing: {StateTesting, StateBlocked},                   // No review from implementing
-		StateTesting:      {StateDebugging, StateMerging, StateReview},    // Review only after testing
-		StateDebugging:    {StateTesting, StateReview, StateBlocked},      // Review allowed from debugging
+		StatePlanning:     {StateImplementing, StateBlocked},           // No review from planning
+		StateImplementing: {StateTesting, StateBlocked},                // No review from implementing
+		StateTesting:      {StateDebugging, StateMerging, StateReview}, // Review only after testing
+		StateDebugging:    {StateTesting, StateReview, StateBlocked},   // Review allowed from debugging
 		StateReview:       {StatePlanning, StateImplementing, StateTesting, StateMerging, StateBlocked},
 		StateMerging:      {StateCompleted, StateConflict},
 		StateConflict:     {StateBlocked},

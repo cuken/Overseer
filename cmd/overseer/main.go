@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -17,8 +19,9 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "none"
+	version    = "dev"
+	commit     = "none"
+	jsonOutput bool
 )
 
 func main() {
@@ -62,10 +65,6 @@ var daemonCmd = &cobra.Command{
 
 var verbose bool
 
-func init() {
-	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
-}
-
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize overseer in current directory",
@@ -88,7 +87,9 @@ var initCmd = &cobra.Command{
 		// Initialize git if needed
 		g := git.New(cwd)
 		if !g.IsRepo() {
-			fmt.Println("Initializing git repository...")
+			if !jsonOutput {
+				fmt.Println("Initializing git repository...")
+			}
 			if err := g.Init(); err != nil {
 				return fmt.Errorf("failed to init git: %w", err)
 			}
@@ -96,10 +97,34 @@ var initCmd = &cobra.Command{
 
 		// Ensure repo has at least one commit (required for branching)
 		if !g.HasCommits() {
-			fmt.Println("Creating initial commit...")
+			if !jsonOutput {
+				fmt.Println("Creating initial commit...")
+			}
 			if err := g.CommitAllowEmpty("Hic sunt dracones"); err != nil {
 				return fmt.Errorf("failed to create initial commit: %w", err)
 			}
+		}
+
+		if jsonOutput {
+			resp := InitResponse{
+				Message: fmt.Sprintf("Initialized overseer in %s", cwd),
+				Path:    cwd,
+				Directories: map[string]string{
+					"requests":   cfg.Paths.Requests,
+					"tasks":      cfg.Paths.Tasks,
+					"workspaces": cfg.Paths.Workspaces,
+					"logs":       cfg.Paths.Logs,
+					"source":     cfg.Paths.Source,
+				},
+				Instructions: []string{
+					"Edit .overseer/config.yaml to customize settings.",
+					"Drop .md files in .overseer/requests/ to add tasks.",
+					"1. Start llama.cpp server: llama-server -m <model> --port 8080",
+					"2. Run the daemon: overseer daemon",
+					"3. Add a task: overseer add task.md",
+				},
+			}
+			return printJSON(resp)
 		}
 
 		fmt.Println("Initialized overseer in", cwd)
@@ -147,6 +172,14 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("failed to write request: %w", err)
 		}
 
+		if jsonOutput {
+			return printJSON(AddResponse{
+				Message:  "Added request successfully",
+				Filename: filename,
+				Location: dstPath,
+			})
+		}
+
 		fmt.Printf("Added request: %s\n", filename)
 		fmt.Printf("Location: %s\n", dstPath)
 		fmt.Println("\nThe daemon will pick this up automatically if running.")
@@ -178,12 +211,19 @@ var statusCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("task not found: %w", err)
 			}
+			if jsonOutput {
+				return printJSON(t)
+			}
 			printTaskDetails(t)
 		} else {
 			// Show all active tasks
 			active, err := store.ListActive()
 			if err != nil {
 				return err
+			}
+
+			if jsonOutput {
+				return printJSON(StatusResponse{Active: active})
 			}
 
 			if len(active) == 0 {
@@ -222,6 +262,24 @@ var listCmd = &cobra.Command{
 		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
 
 		// List by category
+		if jsonOutput {
+			resp := ListResponse{}
+			if tasks, err := store.ListActive(); err == nil {
+				resp.Active = tasks
+			}
+			if tasks, err := store.ListPending(); err == nil {
+				resp.Pending = tasks
+			}
+			if tasks, err := store.ListReview(); err == nil {
+				resp.Review = tasks
+			}
+			completedDir := filepath.Join(projectDir, cfg.Paths.Tasks, "completed")
+			if tasks, err := store.LoadFromDir(completedDir); err == nil {
+				resp.Completed = tasks
+			}
+			return printJSON(resp)
+		}
+
 		categories := []struct {
 			name   string
 			loader func() ([]*types.Task, error)
@@ -286,7 +344,7 @@ var approveCmd = &cobra.Command{
 		t.RequiresApproval = false
 		oldState := t.State
 
-			// Determine next state based on phase
+		// Determine next state based on phase
 		var newState types.TaskState
 		switch t.Phase {
 		case types.PhasePlan:
@@ -309,6 +367,15 @@ var approveCmd = &cobra.Command{
 
 		if err := store.Move(t, oldState, newState); err != nil {
 			return fmt.Errorf("failed to save task: %w", err)
+		}
+
+		if jsonOutput {
+			return printJSON(ApproveResponse{
+				Message:  "Approved task",
+				TaskID:   t.ID,
+				Title:    t.Title,
+				NewState: string(t.State),
+			})
 		}
 
 		fmt.Printf("Approved task %s\n", t.ID[:8])
@@ -345,6 +412,21 @@ var logsCmd = &cobra.Command{
 		workspaceDir := filepath.Join(projectDir, cfg.Paths.Workspaces, t.ID)
 
 		files := []string{"plan.md", "context.md", "handoff.yaml"}
+
+		if jsonOutput {
+			resp := LogsResponse{
+				TaskID: t.ID,
+				Files:  make(map[string]string),
+			}
+			for _, f := range files {
+				path := filepath.Join(workspaceDir, f)
+				if content, err := os.ReadFile(path); err == nil {
+					resp.Files[f] = string(content)
+				}
+			}
+			return printJSON(resp)
+		}
+
 		for _, f := range files {
 			path := filepath.Join(workspaceDir, f)
 			if _, err := os.Stat(path); err == nil {
@@ -359,7 +441,241 @@ var logsCmd = &cobra.Command{
 	},
 }
 
+var cleanCmd = &cobra.Command{
+	Use:   "clean [task-id]",
+	Short: "Clean tasks and workspaces",
+	Long: `Removes task files and workspaces. If no task-id is provided, cleans ALL tasks.
+This will:
+- Remove task files from all state directories
+- Delete workspace directories
+- Remove task-specific log files
+- Optionally delete git branches (with --branches flag)
+
+WARNING: This operation cannot be undone!`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectDir, err := config.GetProjectDir()
+		if err != nil {
+			return fmt.Errorf("failed to find project directory: %w", err)
+		}
+
+		cfg, err := config.Load(projectDir)
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		store := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		gitClient := git.New(projectDir)
+
+		// Get flags
+		cleanBranches, _ := cmd.Flags().GetBool("branches")
+		force, _ := cmd.Flags().GetBool("force")
+
+		if len(args) == 0 {
+			// Clean all tasks
+			if !force && !jsonOutput {
+				fmt.Print("This will remove ALL tasks and workspaces. Are you sure? (yes/no): ")
+				var response string
+				fmt.Scanln(&response)
+				if response != "yes" {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
+
+			return cleanAll(store, projectDir, cfg, gitClient, cleanBranches, jsonOutput)
+		}
+
+		// Clean specific task
+		taskID := args[0]
+		t, err := store.LoadByPrefix(taskID)
+		if err != nil {
+			return fmt.Errorf("task not found: %w", err)
+		}
+
+		if err := cleanTask(t, store, projectDir, cfg, gitClient, cleanBranches, jsonOutput); err != nil {
+			return err
+		}
+
+		if jsonOutput {
+			return printJSON(CleanResponse{
+				Message:      "Task cleaned successfully",
+				CleanedTasks: []string{t.ID},
+			})
+		}
+		return nil
+	},
+}
+
+func cleanTask(t *types.Task, store *task.Store, projectDir string, cfg *types.Config, gitClient *git.Git, cleanBranches bool, quiet bool) error {
+	if !quiet {
+		fmt.Printf("Cleaning task %s (%s)...\n", t.ID[:8], t.Title)
+	}
+
+	// Remove task file from current state directory
+	if err := store.Delete(t); err != nil && !quiet {
+		fmt.Printf("Warning: failed to delete task file: %v\n", err)
+	}
+
+	// Remove workspace directory
+	workspaceDir := filepath.Join(projectDir, cfg.Paths.Workspaces, t.ID)
+	if err := os.RemoveAll(workspaceDir); err != nil {
+		if !quiet {
+			fmt.Printf("Warning: failed to delete workspace: %v\n", err)
+		}
+	} else if !quiet {
+		fmt.Printf("  ✓ Removed workspace\n")
+	}
+
+	// Remove task-specific log file
+	logFile := filepath.Join(projectDir, cfg.Paths.Logs, fmt.Sprintf("agent-%s.log", t.ID[:8]))
+	if err := os.Remove(logFile); err != nil && !os.IsNotExist(err) {
+		if !quiet {
+			fmt.Printf("Warning: failed to delete log file: %v\n", err)
+		}
+	} else if err == nil && !quiet {
+		fmt.Printf("  ✓ Removed log file\n")
+	}
+
+	// Remove git branch if requested
+	if cleanBranches && t.Branch != "" {
+		if gitClient.BranchExists(t.Branch) {
+			// Switch to main/master first
+			mainBranch := cfg.Git.MergeTarget
+			if mainBranch == "" {
+				mainBranch = "main"
+			}
+			gitClient.Checkout(mainBranch)
+
+			if err := gitClient.DeleteBranch(t.Branch); err != nil {
+				if !quiet {
+					fmt.Printf("Warning: failed to delete branch %s: %v\n", t.Branch, err)
+				}
+			} else if !quiet {
+				fmt.Printf("  ✓ Removed branch %s\n", t.Branch)
+			}
+		}
+	}
+
+	if !quiet {
+		fmt.Printf("Task %s cleaned successfully\n", t.ID[:8])
+	}
+	return nil
+}
+
+func cleanAll(store *task.Store, projectDir string, cfg *types.Config, gitClient *git.Git, cleanBranches bool, quiet bool) error {
+	if !quiet {
+		fmt.Println("Cleaning all tasks...")
+	}
+
+	// Collect all tasks from all states
+	var allTasks []*types.Task
+
+	states := []struct {
+		name   string
+		loader func() ([]*types.Task, error)
+	}{
+		{"pending", store.ListPending},
+		{"active", store.ListActive},
+		{"review", store.ListReview},
+		{"completed", func() ([]*types.Task, error) {
+			completedDir := filepath.Join(projectDir, cfg.Paths.Tasks, "completed")
+			return store.LoadFromDir(completedDir)
+		}},
+	}
+
+	for _, state := range states {
+		tasks, err := state.loader()
+		if err != nil {
+			if !quiet {
+				fmt.Printf("Warning: failed to load %s tasks: %v\n", state.name, err)
+			}
+			continue
+		}
+		allTasks = append(allTasks, tasks...)
+		if !quiet {
+			fmt.Printf("Found %d %s tasks\n", len(tasks), state.name)
+		}
+	}
+
+	if len(allTasks) == 0 {
+		if !quiet {
+			fmt.Println("No tasks found to clean")
+		}
+		if quiet {
+			// Return empty success
+			return printJSON(CleanResponse{Message: "No tasks found to clean"})
+		}
+		return nil
+	}
+
+	if !quiet {
+		fmt.Printf("\nCleaning %d tasks...\n", len(allTasks))
+	}
+
+	var cleanedIDs []string
+	// Clean each task
+	for _, t := range allTasks {
+		if err := cleanTask(t, store, projectDir, cfg, gitClient, cleanBranches, quiet); err != nil {
+			if !quiet {
+				fmt.Printf("Warning: failed to clean task %s: %v\n", t.ID[:8], err)
+			}
+		} else {
+			cleanedIDs = append(cleanedIDs, t.ID)
+		}
+	}
+
+	// Clean all workspaces (in case there are orphaned ones)
+	workspacesDir := filepath.Join(projectDir, cfg.Paths.Workspaces)
+	if err := os.RemoveAll(workspacesDir); err != nil {
+		if !quiet {
+			fmt.Printf("Warning: failed to remove workspaces directory: %v\n", err)
+		}
+	}
+	os.MkdirAll(workspacesDir, 0755)
+	if !quiet {
+		fmt.Println("  ✓ Cleaned all workspaces")
+	}
+
+	// Clean all agent log files
+	logsDir := filepath.Join(projectDir, cfg.Paths.Logs)
+	entries, err := os.ReadDir(logsDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".log" {
+				name := entry.Name()
+				if strings.HasPrefix(name, "agent-") || name == "errors.log" {
+					logPath := filepath.Join(logsDir, name)
+					os.Remove(logPath)
+				}
+			}
+		}
+		if !quiet {
+			fmt.Println("  ✓ Cleaned agent log files")
+		}
+	}
+
+	if !quiet {
+		fmt.Printf("\n✓ Successfully cleaned all tasks\n")
+	} else {
+		return printJSON(CleanResponse{
+			Message:      "Successfully cleaned all tasks",
+			CleanedTasks: cleanedIDs,
+			CleanedLogs:  true,
+		})
+	}
+	return nil
+}
+
 func init() {
+	cleanCmd.Flags().Bool("branches", false, "Also delete git branches for cleaned tasks")
+	cleanCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt (use with caution)")
+}
+
+func init() {
+	daemonCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
+
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(addCmd)
@@ -367,6 +683,7 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(approveCmd)
 	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(cleanCmd)
 }
 
 func printTaskDetails(t *types.Task) {
@@ -396,4 +713,10 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+func printJSON(v interface{}) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
