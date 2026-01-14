@@ -76,6 +76,7 @@ func TestStore_Sync(t *testing.T) {
 	if err := store.Save(loaded); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
+	store.Flush() // Force sync for test
 
 	// Read JSONL directly
 	tasks, err := jsonl.Read(jsonlPath)

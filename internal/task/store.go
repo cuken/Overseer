@@ -16,9 +16,11 @@ import (
 
 // Store manages task persistence using SQLite and JSONL
 type Store struct {
-	db        *sqlite.SQLiteStore
-	jsonlPath string
-	mu        sync.RWMutex
+	db         *sqlite.SQLiteStore
+	jsonlPath  string
+	mu         sync.RWMutex
+	dirty      bool
+	flushTimer *time.Timer
 }
 
 // NewStore creates a new task store and synchronizes with JSONL
@@ -46,7 +48,39 @@ func NewStore(tasksDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.Flush() // Ensure final changes are persisted
 	return s.db.Close()
+}
+
+// Flush immediately persists any pending changes to JSONL
+func (s *Store) Flush() error {
+	s.mu.Lock()
+	if !s.dirty {
+		s.mu.Unlock()
+		return nil
+	}
+	s.dirty = false
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+		s.flushTimer = nil
+	}
+	s.mu.Unlock()
+
+	return s.syncToJSONL()
+}
+
+func (s *Store) scheduleFlush() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.dirty = true
+	if s.flushTimer != nil {
+		s.flushTimer.Stop()
+	}
+
+	s.flushTimer = time.AfterFunc(5*time.Second, func() {
+		s.Flush()
+	})
 }
 
 func (s *Store) syncFromJSONL() error {
@@ -130,8 +164,9 @@ func (s *Store) Save(task *types.Task) error {
 		}
 	}
 
-	// Always sync to JSONL for backup/human readability
-	return s.syncToJSONL()
+	// Always sync to JSONL for backup/human readability (debounced)
+	s.scheduleFlush()
+	return nil
 }
 
 // Load reads a task by ID
@@ -181,7 +216,8 @@ func (s *Store) Delete(task *types.Task) error {
 	if err := s.db.DeleteTask(ctx, task.ID); err != nil {
 		return err
 	}
-	return s.syncToJSONL()
+	s.scheduleFlush()
+	return nil
 }
 
 // Move transitions a task (State change is just an update in SQLite)
