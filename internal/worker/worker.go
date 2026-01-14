@@ -64,10 +64,38 @@ func NewWorker(id int, projectDir string, cfg *types.Config, store *task.Store, 
 	}
 }
 
+func (w *Worker) reportStatus(state types.AgentState, taskID string) {
+	status := &types.WorkerStatus{
+		ID:            fmt.Sprintf("worker-%d", w.id),
+		Pid:           0, // TODO: get PID
+		TaskID:        taskID,
+		State:         state,
+		LastHeartbeat: time.Now(),
+		StartedAt:     time.Now(), // TODO: track actual start time
+	}
+	if err := w.store.UpdateWorkerStatus(status); err != nil {
+		w.log.Warn("Failed to report worker status: %v", err)
+	}
+}
+
 // Run starts the worker loop
 func (w *Worker) Run(ctx context.Context) {
 	w.log.Info("Started")
 	defer w.log.Info("Stopped")
+
+	// Start heartbeat
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w.reportStatus(types.AgentStateRunning, "")
+			}
+		}
+	}()
 
 	for {
 		select {
@@ -141,6 +169,8 @@ func (w *Worker) processTask(ctx context.Context, t *types.Task) error {
 
 	// Run agent loop
 	for t.State.IsActive() {
+		w.reportStatus(types.AgentStateWorking, t.ID)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

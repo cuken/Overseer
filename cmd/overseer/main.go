@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -715,6 +716,78 @@ func init() {
 	rootCmd.AddCommand(approveCmd)
 	rootCmd.AddCommand(logsCmd)
 	rootCmd.AddCommand(cleanCmd)
+	rootCmd.AddCommand(agentsCmd)
+}
+
+var agentsCmd = &cobra.Command{
+	Use:   "agents",
+	Short: "Show active agents status",
+	Long:  `Displays the status and health of all active agent workers.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		projectDir, err := config.GetProjectDir()
+		if err != nil {
+			return fmt.Errorf("failed to find project directory: %w", err)
+		}
+
+		cfg, err := config.Load(projectDir)
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		store, err := task.NewStore(filepath.Join(projectDir, cfg.Paths.Tasks))
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
+		}
+		defer store.Close()
+
+		// Prune stale workers (threshoid: 1 minute)
+		if err := store.PruneStaleWorkers(1 * time.Minute); err != nil {
+			// Just log warning, continue to list
+			if !jsonOutput {
+				fmt.Printf("Warning: failed to prune stale workers: %v\n", err)
+			}
+		}
+
+		workers, err := store.ListWorkers()
+		if err != nil {
+			return fmt.Errorf("failed to list workers: %w", err)
+		}
+
+		if jsonOutput {
+			return printJSON(workers)
+		}
+
+		if len(workers) == 0 {
+			fmt.Println("No active agents found")
+			return nil
+		}
+
+		fmt.Printf("Active Agents (%d):\n", len(workers))
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\tSTATE\tTASK\tLAST HEARTBEAT\tSTARTED")
+
+		now := time.Now()
+		for _, worker := range workers {
+			heartbeatAge := now.Sub(worker.LastHeartbeat).Round(time.Second)
+			startedAge := now.Sub(worker.StartedAt).Round(time.Second)
+
+			taskID := "-"
+			if worker.TaskID != "" {
+				taskID = worker.TaskID[:8]
+			}
+
+			// Flag dead agents
+			state := string(worker.State)
+			if heartbeatAge > 30*time.Second {
+				state = fmt.Sprintf("%s (STUCK?)", state)
+			}
+
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s ago\t%s ago\n",
+				worker.ID, state, taskID, heartbeatAge, startedAge)
+		}
+		w.Flush()
+		return nil
+	},
 }
 
 func printTaskDetails(t *types.Task) {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/cuken/overseer/pkg/types"
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -61,6 +62,15 @@ func (s *SQLiteStore) initSchema() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
 	CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+	CREATE TABLE IF NOT EXISTS workers (
+		id TEXT PRIMARY KEY,
+		pid INTEGER,
+		task_id TEXT,
+		state TEXT,
+		last_heartbeat DATETIME,
+		started_at DATETIME
+	);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -190,4 +200,50 @@ func (s *SQLiteStore) scanTask(row scannable) (*types.Task, error) {
 	}
 
 	return &t, nil
+}
+
+// Worker operations
+
+func (s *SQLiteStore) UpdateWorkerStatus(ctx context.Context, status *types.WorkerStatus) error {
+	query := `
+	INSERT INTO workers (id, pid, task_id, state, last_heartbeat, started_at)
+	VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		task_id=excluded.task_id,
+		state=excluded.state,
+		last_heartbeat=excluded.last_heartbeat`
+
+	_, err := s.db.ExecContext(ctx, query,
+		status.ID, status.Pid, status.TaskID, status.State,
+		status.LastHeartbeat, status.StartedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) ListWorkers(ctx context.Context) ([]*types.WorkerStatus, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT * FROM workers")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var workers []*types.WorkerStatus
+	for rows.Next() {
+		var w types.WorkerStatus
+		err := rows.Scan(
+			&w.ID, &w.Pid, &w.TaskID,
+			&w.State, &w.LastHeartbeat, &w.StartedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, &w)
+	}
+	return workers, nil
+}
+
+func (s *SQLiteStore) PruneStaleWorkers(ctx context.Context, threshold time.Duration) error {
+	deadline := time.Now().Add(-threshold)
+	_, err := s.db.ExecContext(ctx, "DELETE FROM workers WHERE last_heartbeat < ?", deadline)
+	return err
 }

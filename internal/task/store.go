@@ -201,3 +201,20 @@ func (s *Store) ListPending() ([]*types.Task, error) {
 func (s *Store) ListReview() ([]*types.Task, error) {
 	return s.ListByState(types.StateReview)
 }
+
+// Worker operations
+
+func (s *Store) UpdateWorkerStatus(status *types.WorkerStatus) error {
+	ctx := context.Background()
+	return s.db.UpdateWorkerStatus(ctx, status)
+}
+
+func (s *Store) ListWorkers() ([]*types.WorkerStatus, error) {
+	ctx := context.Background()
+	return s.db.ListWorkers(ctx)
+}
+
+func (s *Store) PruneStaleWorkers(threshold time.Duration) error {
+	ctx := context.Background()
+	return s.db.PruneStaleWorkers(ctx, threshold)
+}
